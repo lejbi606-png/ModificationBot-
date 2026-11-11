@@ -2,20 +2,18 @@ import asyncio
 import os
 import asyncpg
 from aiohttp import web
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, MessageReactionUpdated
 
-# Берем токены из настроек сервера (Render)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Защита от ошибки с форматом ссылки Aiven
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Глобальные переменные
 db_pool = None
 bot = None
-dp = Dispatcher() # Выносим сюда, чтобы добавлять логику дальше
+dp = Dispatcher()
 
 async def init_db():
     global db_pool
@@ -23,11 +21,9 @@ async def init_db():
     retries = 5
     while retries > 0:
         try:
-            # Пытаемся подключиться с таймаутом
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=10)
-            
             async with db_pool.acquire() as connection:
-                # Создаем таблицу юзеров
+                # Юзеры (баланс)
                 await connection.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -35,7 +31,14 @@ async def init_db():
                         is_premium BOOLEAN DEFAULT FALSE
                     );
                 ''')
-                # Создаем таблицу истории реакций (для античита)
+                # Сообщения (кто автор)
+                await connection.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        message_id BIGINT PRIMARY KEY,
+                        author_id BIGINT
+                    );
+                ''')
+                # История реакций (для античита)
                 await connection.execute('''
                     CREATE TABLE IF NOT EXISTS reactions (
                         id SERIAL PRIMARY KEY,
@@ -51,10 +54,80 @@ async def init_db():
             print(f"❌ Ошибка подключения к БД: {e}. Осталось попыток: {retries-1}")
             retries -= 1
             await asyncio.sleep(5)
-            
-    print("‼️ Не удалось подключиться к базе. Проверь DATABASE_URL на Render.")
 
-# Мини-сервер для Render (отвечает на пинги UptimeRobot)
+# ================== ЛОГИКА РЕАКЦИЙ ==================
+@dp.message(F.chat.type.in_({"group", "supergroup"}))
+async def save_msg(message: Message):
+    if not message.from_user: return
+    # Сохраняем ID сообщения и кто его написал
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO messages (message_id, author_id) VALUES ($1, $2)
+            ON CONFLICT (message_id) DO NOTHING;
+        ''', message.message_id, message.from_user.id)
+
+@dp.message_reaction()
+async def handle_reaction(reaction: MessageReactionUpdated):
+    user = reaction.user
+    if not user:
+        return # Если реакция анонимная, скипаем
+        
+    # Сравниваем, что добавилось, а что убрали
+    old = set(r.emoji for r in reaction.old_reaction if r.type == 'emoji')
+    new = set(r.emoji for r in reaction.new_reaction if r.type == 'emoji')
+    
+    added = new - old
+    
+    if not added:
+        return # Если просто убрали реакцию, мы ничего не делаем (не отнимаем баллы)
+
+    author_id = None
+    async with db_pool.acquire() as conn:
+        # Ищем автора сообщения, на которое поставили реакцию
+        msg = await conn.fetchrow('SELECT author_id FROM messages WHERE message_id = $1', reaction.message_id)
+        if msg:
+            author_id = msg['author_id']
+            
+    if not author_id or author_id == user.id:
+        return # Если автор не найден или человек лайкнул сам себя - ничего не даем
+
+    for emoji in added:
+        async with db_pool.acquire() as conn:
+            # Проверяем историю этого юзера по этому сообщению
+            row = await conn.fetchrow('''
+                SELECT id, toggles FROM reactions 
+                WHERE user_id = $1 AND message_id = $2 AND emoji = $3
+            ''', user.id, reaction.message_id, emoji)
+            
+            # Убедимся, что автор сообщения есть в таблице users
+            await conn.execute('INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING', author_id)
+
+            if not row:
+                # Первый раз ставит
+                await conn.execute('''
+                    INSERT INTO reactions (user_id, message_id, emoji, toggles) 
+                    VALUES ($1, $2, $3, 0)
+                ''', user.id, reaction.message_id, emoji)
+                
+                # Начисляем баллы (если премиум - х3)
+                reward = 3 if user.is_premium else 1
+                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', reward, author_id)
+                print(f"✅ {user.first_name} поставил {emoji}. Автору {author_id} начислено {reward} баллов.")
+                
+            else:
+                toggles = row['toggles']
+                if toggles == 0:
+                    # Первая махинация (убрал и поставил)
+                    await conn.execute('UPDATE reactions SET toggles = 1 WHERE id = $1', row['id'])
+                    print(f"⚠️ {user.first_name} переставил {emoji}. Баллы не начислены.")
+                else:
+                    # Вторая махинация и далее (ШТРАФ)
+                    await conn.execute('UPDATE reactions SET toggles = toggles + 1 WHERE id = $1', row['id'])
+                    await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', author_id)
+                    print(f"❌ {user.first_name} накручивает {emoji}. Автору {author_id} штраф -5 баллов.")
+
+
+# ================== ВЕБ-СЕРВЕР ==================
 async def handle_ping(request):
     return web.Response(text="Bot is alive")
 
@@ -70,19 +143,18 @@ async def start_web_server():
 
 async def main():
     global bot
-    # 1. Сначала поднимаем веб-сервер (чтобы Render сразу видел порт)
     await start_web_server()
-    
-    # 2. Подключаемся к базе
     await init_db()
     
-    # 3. Инициализируем бота
     bot = Bot(token=BOT_TOKEN)
-    print("✅ Бот готов к работе!")
     
-    # Пока просто держим процесс живым (логику реакций добавим в следующем шаге)
-    while True:
-        await asyncio.sleep(3600)
+    # ВАЖНО: Включаем получение событий реакций в Telegram
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    print("✅ Бот готов к работе и слушает реакции!")
+    
+    # Запускаем постоянный опрос Телеграма
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())
