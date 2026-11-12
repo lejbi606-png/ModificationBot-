@@ -24,12 +24,17 @@ db_pool = None
 bot = None
 dp = Dispatcher()
 
-main_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🗑 Сбросить прогресс")]
-    ],
-    resize_keyboard=True
-)
+
+# Динамическая клавиатура: админу — две кнопки, остальным — одна
+def get_main_kb(user_id: int) -> ReplyKeyboardMarkup:
+    buttons = [[KeyboardButton(text="💰 Баланс")]]
+    if user_id in ADMIN_IDS:
+        buttons[0].append(KeyboardButton(text="🗑 Сбросить прогресс"))
+    
+    return ReplyKeyboardMarkup(
+        keyboard=buttons,
+        resize_keyboard=True
+    )
 
 
 async def init_db():
@@ -80,8 +85,7 @@ async def init_db():
                     );
                 ''')
 
-                # ---- Безопасная миграция: добавляем недостающие колонки, если их нет ----
-                # (для случая, если в базе остался старый скелет без этих полей)
+                # ---- Безопасная миграция ----
                 await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;')
                 await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;')
                 
@@ -121,7 +125,7 @@ async def cmd_start(message: Message):
             "• <b>5-е действие:</b> <b>Штраф -5 баллов</b>.\n\n"
             "👇 Свой баланс можно проверить в личке по кнопке ниже, либо командой <code>/balance</code> в чате."
         )
-        await message.answer(text, reply_markup=main_kb, parse_mode="HTML")
+        await message.answer(text, reply_markup=get_main_kb(message.from_user.id), parse_mode="HTML")
     else:
         text = "👋 Привет! Я работаю в чате. Пиши сообщения и собирай реакции!"
         await message.answer(text)
@@ -142,10 +146,11 @@ async def cmd_balance(message: Message):
         await message.answer("💰 У тебя пока 0 баллов. Пиши в чат и собирай реакции!")
 
 
-# ================== Сброс ==================
+# ================== Сброс (только для админов) ==================
 @dp.message(F.text == "🗑 Сбросить прогресс", F.chat.type == "private")
 async def cmd_reset(message: Message):
-    if ADMIN_IDS and message.from_user.id not in ADMIN_IDS:
+    # Двойная защита: даже если кто-то напишет текст вручную, не пройдет
+    if message.from_user.id not in ADMIN_IDS:
         await message.answer("⛔ Нет доступа.")
         return
     async with db_pool.acquire() as conn:
@@ -285,7 +290,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
     msg_id = reaction.message_id
 
     try:
-        # В каналах реакции игнорируем (там работают кнопки)
         if reaction.chat.type == "channel":
             return
         
