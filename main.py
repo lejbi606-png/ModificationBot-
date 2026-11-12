@@ -32,27 +32,38 @@ async def init_db():
         try:
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
-                # ---- Миграция старой схемы (сносим кривые таблицы) ----
-                has_old_emoji = await conn.fetchval('''
+                
+                # ---- УМНАЯ МИГРАЦИЯ (сработает только 1 раз, если база старая) ----
+                table_exists = await conn.fetchval('''
                     SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'reactions' AND column_name = 'emoji'
+                        SELECT 1 FROM information_schema.tables 
+                        WHERE table_name = 'reactions'
                     )
                 ''')
-                if has_old_emoji:
-                    print("🔄 Миграция: пересоздаю reactions под новую схему античита...")
-                    await conn.execute('DROP TABLE reactions')
+                
+                if table_exists:
+                    has_new_columns = await conn.fetchval('''
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'reactions' AND column_name = 'max_rewarded'
+                        )
+                    ''')
+                    if not has_new_columns:
+                        print("🔄 Обнаружена старая структура базы. Пересоздаю таблицу reactions...")
+                        await conn.execute('DROP TABLE reactions CASCADE')
 
+                # Убираем старую колонку is_premium, если она осталась
                 has_premium_col = await conn.fetchval('''
                     SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
+                        SELECT 1 FROM information_schema.columns 
                         WHERE table_name = 'users' AND column_name = 'is_premium'
                     )
                 ''')
                 if has_premium_col:
                     await conn.execute('ALTER TABLE users DROP COLUMN is_premium')
+                # -------------------------------------------------------------------
 
-                # ---- Создание таблиц ----
+                # ---- Создание таблиц (если их нет) ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
