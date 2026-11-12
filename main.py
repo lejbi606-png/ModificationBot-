@@ -24,13 +24,14 @@ db_pool = None
 bot = None
 dp = Dispatcher()
 
-OWNERS = set()
-
-def get_main_kb(user_id: int) -> ReplyKeyboardMarkup:
-    is_admin = (user_id in ADMIN_IDS) or (user_id in OWNERS)
-    buttons = [[KeyboardButton(text="💰 Баланс")]]
-    if is_admin:
-        buttons[0].append(KeyboardButton(text="🗑 Сбросить прогресс"))
+# Динамическая клавиатура
+def get_main_kb(is_private: bool) -> ReplyKeyboardMarkup:
+    if is_private:
+        # В личке у всех две кнопки
+        buttons = [[KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🗑 Сбросить прогресс")]]
+    else:
+        # В группах только баланс
+        buttons = [[KeyboardButton(text="💰 Баланс")]]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
@@ -97,11 +98,7 @@ async def init_db():
                 await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;')
                 await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;')
                 
-                rows = await conn.fetch('SELECT user_id FROM bot_admins')
-                for r in rows:
-                    OWNERS.add(r['user_id'])
-                
-            print(f"✅ База данных готова. Авто-админов: {len(OWNERS)}")
+            print("✅ База данных готова.")
             return
         except Exception as e:
             print(f"❌ Ошибка БД (попытка {attempt}/5): {e}")
@@ -125,7 +122,6 @@ async def track_chat_owner(update: ChatMemberUpdated):
             if not owner_id:
                 return
 
-            OWNERS.add(owner_id)
             linked_id = getattr(chat, 'linked_chat_id', None)
 
             async with db_pool.acquire() as conn:
@@ -170,9 +166,9 @@ async def cmd_start(message: Message):
             "• <b>5-я реакция:</b> Штраф -5 баллов.\n\n"
             "👇 Свой баланс можно проверить в личке по кнопке ниже, либо командой /balance в чате."
         )
-        await message.answer(text, reply_markup=get_main_kb(message.from_user.id), parse_mode="HTML")
+        await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
     else:
-        await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!")
+        await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
 @dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}), F.chat.type != "channel")
@@ -186,21 +182,20 @@ async def cmd_balance(message: Message):
         await message.answer("💰 У тебя пока 0 баллов.")
 
 
+# ================== МЕНЮ СБРОСА В ЛИЧКЕ ==================
 @dp.message(F.text == "🗑 Сбросить прогресс", F.chat.type == "private")
 async def cmd_reset_menu(message: Message):
-    if (message.from_user.id not in ADMIN_IDS) and (message.from_user.id not in OWNERS):
-        await message.answer("⛔ Нет доступа.")
-        return
-
     user_id = message.from_user.id
+    
     async with db_pool.acquire() as conn:
+        # Показываем ТОЛЬКО те чаты, где этот юзер - owner_id. (Глобальные админы из ENV видят всё)
         if user_id in ADMIN_IDS:
             rows = await conn.fetch('SELECT chat_id, title, chat_type, linked_chat_id FROM managed_chats')
         else:
             rows = await conn.fetch('SELECT chat_id, title, chat_type, linked_chat_id FROM managed_chats WHERE owner_id = $1', user_id)
 
     if not rows:
-        await message.answer("У тебя пока нет привязанных чатов.")
+        await message.answer("У тебя нет чатов или каналов, где ты являешься владельцем.")
         return
 
     shown = set()
@@ -237,8 +232,10 @@ async def handle_reset_chat(callback: CallbackQuery):
         if not owner_row:
             await callback.answer("Чат не найден", show_alert=True)
             return
+            
+        # Жесткая проверка прав перед удалением
         if callback.from_user.id not in ADMIN_IDS and owner_row['owner_id'] != callback.from_user.id:
-            await callback.answer("⛔ Нет прав.", show_alert=True)
+            await callback.answer("⛔ Нет прав на сброс этого чата.", show_alert=True)
             return
 
         await conn.execute('DELETE FROM messages WHERE chat_id = $1', chat_id)
@@ -296,9 +293,7 @@ async def handle_earn_button(callback: CallbackQuery):
     user = callback.from_user
     channel_id = callback.message.chat.id
     msg_id = int(callback.data.split("_", 1)[1])
-    
-    # В КАНАЛАХ ЛИМИТ 1 ДЛЯ ВСЕХ (без Премиума)
-    limit = 1
+    limit = 1  # В каналах у всех лимит 1
     
     try:
         async with db_pool.acquire() as conn:
