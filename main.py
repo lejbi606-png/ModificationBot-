@@ -23,7 +23,7 @@ async def init_db():
         try:
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=10)
             async with db_pool.acquire() as connection:
-                # Юзеры (баланс)
+                # Юзеры
                 await connection.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -31,100 +31,108 @@ async def init_db():
                         is_premium BOOLEAN DEFAULT FALSE
                     );
                 ''')
-                # Сообщения (кто автор)
+                # Сообщения теперь привязаны к чату (chat_id + message_id = уникальная пара)
                 await connection.execute('''
                     CREATE TABLE IF NOT EXISTS messages (
-                        message_id BIGINT PRIMARY KEY,
-                        author_id BIGINT
+                        chat_id BIGINT,
+                        message_id BIGINT,
+                        author_id BIGINT,
+                        PRIMARY KEY (chat_id, message_id)
                     );
                 ''')
-                # История реакций (для античита)
+                # История реакций тоже привязана к чату
                 await connection.execute('''
                     CREATE TABLE IF NOT EXISTS reactions (
                         id SERIAL PRIMARY KEY,
+                        chat_id BIGINT,
                         user_id BIGINT,
                         message_id BIGINT,
                         emoji TEXT,
                         toggles INTEGER DEFAULT 0
                     );
                 ''')
-            print("✅ База данных успешно инициализирована.")
+            print("✅ База данных обновлена (с поддержкой нескольких чатов).")
             return
         except Exception as e:
-            print(f"❌ Ошибка подключения к БД: {e}. Осталось попыток: {retries-1}")
+            print(f"❌ Ошибка БД: {e}. Осталось попыток: {retries-1}")
             retries -= 1
             await asyncio.sleep(5)
 
-# ================== ЛОГИКА РЕАКЦИЙ ==================
+# ================== ЛОГИКА СОХРАНЕНИЯ СООБЩЕНИЙ ==================
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def save_msg(message: Message):
     if not message.from_user: return
-    # Сохраняем ID сообщения и кто его написал
     async with db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO messages (message_id, author_id) VALUES ($1, $2)
-            ON CONFLICT (message_id) DO NOTHING;
-        ''', message.message_id, message.from_user.id)
+            INSERT INTO messages (chat_id, message_id, author_id) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (chat_id, message_id) DO NOTHING;
+        ''', message.chat.id, message.message_id, message.from_user.id)
 
+# ================== ЛОГИКА РЕАКЦИЙ ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
     user = reaction.user
     if not user:
-        return # Если реакция анонимная, скипаем
+        return # Анонимная реакция
         
-    # Сравниваем, что добавилось, а что убрали
     old = set(r.emoji for r in reaction.old_reaction if r.type == 'emoji')
     new = set(r.emoji for r in reaction.new_reaction if r.type == 'emoji')
-    
     added = new - old
     
     if not added:
-        return # Если просто убрали реакцию, мы ничего не делаем (не отнимаем баллы)
+        return # Реакцию убрали, баллы не отнимаем
 
-    author_id = None
-    async with db_pool.acquire() as conn:
-        # Ищем автора сообщения, на которое поставили реакцию
-        msg = await conn.fetchrow('SELECT author_id FROM messages WHERE message_id = $1', reaction.message_id)
-        if msg:
-            author_id = msg['author_id']
-            
-    if not author_id or author_id == user.id:
-        return # Если автор не найден или человек лайкнул сам себя - ничего не даем
+    chat_id = reaction.chat.id
+    msg_id = reaction.message_id
+
+    # ТВОЕ ПРАВИЛО 1: Если это КАНАЛ - баллы тому, кто ПОСТАВИЛ
+    if reaction.chat.type == "channel":
+        target_user_id = user.id 
+    # ТВОЕ ПРАВИЛО 2: Если это ЧАТ - баллы АВТОРУ сообщения
+    else:
+        async with db_pool.acquire() as conn:
+            msg = await conn.fetchrow('SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
+            if not msg:
+                return # Сообщение не найдено в базе (написано до запуска бота)
+            target_user_id = msg['author_id']
+
+    if target_user_id == user.id:
+        return # Защита от лайков самому себе
 
     for emoji in added:
         async with db_pool.acquire() as conn:
-            # Проверяем историю этого юзера по этому сообщению
+            # Ищем реакцию конкретно в этом чате на это сообщение
             row = await conn.fetchrow('''
                 SELECT id, toggles FROM reactions 
-                WHERE user_id = $1 AND message_id = $2 AND emoji = $3
-            ''', user.id, reaction.message_id, emoji)
+                WHERE chat_id = $1 AND user_id = $2 AND message_id = $3 AND emoji = $4
+            ''', chat_id, user.id, msg_id, emoji)
             
-            # Убедимся, что автор сообщения есть в таблице users
-            await conn.execute('INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING', author_id)
+            # Проверяем, есть ли получатель баллов в базе
+            await conn.execute('INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING', target_user_id)
 
             if not row:
-                # Первый раз ставит
+                # Первый раз
                 await conn.execute('''
-                    INSERT INTO reactions (user_id, message_id, emoji, toggles) 
-                    VALUES ($1, $2, $3, 0)
-                ''', user.id, reaction.message_id, emoji)
+                    INSERT INTO reactions (chat_id, user_id, message_id, emoji, toggles) 
+                    VALUES ($1, $2, $3, $4, 0)
+                ''', chat_id, user.id, msg_id, emoji)
                 
-                # Начисляем баллы (если премиум - х3)
                 reward = 3 if user.is_premium else 1
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', reward, author_id)
-                print(f"✅ {user.first_name} поставил {emoji}. Автору {author_id} начислено {reward} баллов.")
+                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', reward, target_user_id)
+                print(f"✅ {user.first_name} поставил {emoji}. Юзеру {target_user_id} начислено {reward} баллов.")
                 
             else:
                 toggles = row['toggles']
                 if toggles == 0:
-                    # Первая махинация (убрал и поставил)
+                    # Первая махинация
                     await conn.execute('UPDATE reactions SET toggles = 1 WHERE id = $1', row['id'])
                     print(f"⚠️ {user.first_name} переставил {emoji}. Баллы не начислены.")
                 else:
-                    # Вторая махинация и далее (ШТРАФ)
+                    # Штраф
                     await conn.execute('UPDATE reactions SET toggles = toggles + 1 WHERE id = $1', row['id'])
-                    await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', author_id)
-                    print(f"❌ {user.first_name} накручивает {emoji}. Автору {author_id} штраф -5 баллов.")
+                    await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', target_user_id)
+                    print(f"❌ {user.first_name} накручивает. Штраф -5 баллов юзеру {target_user_id}.")
 
 
 # ================== ВЕБ-СЕРВЕР ==================
@@ -147,13 +155,9 @@ async def main():
     await init_db()
     
     bot = Bot(token=BOT_TOKEN)
-    
-    # ВАЖНО: Включаем получение событий реакций в Telegram
     await bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Бот готов и различает Каналы и Чаты!")
     
-    print("✅ Бот готов к работе и слушает реакции!")
-    
-    # Запускаем постоянный опрос Телеграма
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
