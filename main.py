@@ -4,7 +4,7 @@ import asyncpg
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, MessageReactionUpdated
+from aiogram.types import Message, MessageReactionUpdated, ReplyKeyboardMarkup, KeyboardButton
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -15,6 +15,14 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 db_pool = None
 bot = None
 dp = Dispatcher()
+
+# Клавиатура с кнопками
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🗑 Сбросить прогресс")]
+    ],
+    resize_keyboard=True
+)
 
 async def init_db():
     global db_pool
@@ -59,12 +67,51 @@ async def init_db():
 # ================== КОМАНДА СТАРТ ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("👋 Привет! Я бот для начисления баллов.\nПиши сообщения в чат и получай реакции от других!")
+    if message.chat.type == "private":
+        text = (
+            "👋 Привет! Я бот для начисления баллов в чате.\n\n"
+            "📜 **Как это работает:**\n"
+            "1. Ты пишешь сообщение в наш чат.\n"
+            "2. Другие участники ставят на него реакции.\n"
+            "3. За каждую новую реакцию ты получаешь баллы (1 балл, а если у тебя Telegram Premium — 3 балла).\n\n"
+            "⚠️ **Правила и штрафы:**\n"
+            "Запрещено накручивать баллы (ставить, убирать и снова ставить реакцию).\n"
+            "Если бот заметит это:\n"
+            "• 1-й раз: баллы не начислятся.\n"
+            "• 2-й раз: штраф -5 баллов.\n\n"
+            "👇 Используй кнопки ниже, чтобы проверить баланс или сбросить прогресс (для тестов)."
+        )
+    else:
+        text = "👋 Привет! Я работаю в чате. Пиши сообщения и собирай реакции!"
+        
+    await message.answer(text, reply_markup=main_kb, parse_mode="Markdown")
+
+# ================== КНОПКИ И БАЛАНС ==================
+@dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}))
+async def cmd_balance(message: Message):
+    user_id = message.from_user.id
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT balance FROM users WHERE user_id = $1', user_id)
+        
+    if row:
+        await message.answer(f"💰 Твой баланс: {row['balance']} баллов.")
+    else:
+        await message.answer("💰 У тебя пока 0 баллов. Пиши в чат и собирай реакции!")
+
+@dp.message(F.text == "🗑 Сбросить прогресс")
+async def cmd_reset(message: Message):
+    # Полная очистка таблиц (для тестов)
+    async with db_pool.acquire() as conn:
+        await conn.execute('TRUNCATE TABLE users, messages, reactions RESTART IDENTITY CASCADE;')
+    await message.answer("🗑 **Весь прогресс удален!**\nВсе баллы и история реакций стерты. Можно тестировать заново.", parse_mode="Markdown")
 
 # ================== СОХРАНЕНИЕ СООБЩЕНИЙ ==================
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def save_msg(message: Message):
     if not message.from_user: return
+    # Игнорируем сообщения с кнопками, чтобы не засорять базу
+    if message.text in {"💰 Баланс", "🗑 Сбросить прогресс"}: return
+    
     async with db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO messages (chat_id, message_id, author_id) 
@@ -124,7 +171,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 else:
                     await conn.execute('UPDATE reactions SET toggles = toggles + 1 WHERE id = $1', row['id'])
                     await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', target_user_id)
-                    print(f"❌ {user.first_name} накручивает. Штраф -5 баллов юзеру {target_user_id}.")
+                    print(f"❌ {user.first_name} нарушает правила (накрутка). Штраф -5 баллов юзеру {target_user_id}.")
 
 
 # ================== ВЕБ-СЕРВЕР ==================
@@ -148,7 +195,7 @@ async def main():
     
     bot = Bot(token=BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Бот готов, различает Каналы и Чаты, и отвечает на /start!")
+    print("✅ Бот готов к работе (с кнопками и правилами)!")
     
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
