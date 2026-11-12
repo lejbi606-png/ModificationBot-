@@ -33,35 +33,12 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                # ---- ЖЕСТКАЯ ПРОВЕРКА ВСЕХ ТАБЛИЦ ----
-                # Если таблицы существуют, но в них нет нужных колонок — сносим их.
-                
-                # 1. Проверка messages
-                msg_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'messages')")
-                if msg_table_exists:
-                    has_author = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'author_id')")
-                    if not has_author:
-                        print("🔄 Удаляю старую кривую таблицу messages...")
-                        await conn.execute('DROP TABLE messages CASCADE')
-
-                # 2. Проверка reactions
-                react_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'reactions')")
-                if react_table_exists:
-                    has_max_rewarded = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'reactions' AND column_name = 'max_rewarded')")
-                    if not has_max_rewarded:
-                        print("🔄 Удаляю старую кривую таблицу reactions...")
-                        await conn.execute('DROP TABLE reactions CASCADE')
-
-                # 3. Проверка users
-                users_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users')")
-                if users_table_exists:
-                    has_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
-                    if not has_balance:
-                        print("🔄 Удаляю старую кривую таблицу users...")
-                        await conn.execute('DROP TABLE users CASCADE')
+                # ---- ЖЕСТКИЙ СБРОС (пока тестируем) ----
+                print("🔄 Сносим старые таблицы...")
+                await conn.execute('DROP TABLE IF EXISTS reactions, messages, users CASCADE')
                 # ---------------------------------------
 
-                # ---- Создание таблиц (если их нет) ----
+                # ---- Создание таблиц заново ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -160,7 +137,6 @@ async def save_msg(message: Message):
 # ================== Реакции ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
-    print(f"\n📥 [ЛОГ] Реакция на сообщение {reaction.message_id}")
     user = reaction.user
     if not user:
         return
@@ -190,7 +166,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             target_user_id = msg['author_id']
 
         if target_user_id == user.id:
-            print("⚠️ [ЛОГ] Своя реакция. Игнор.")
             return
 
         async with db_pool.acquire() as conn:
