@@ -1,6 +1,10 @@
 import asyncio
 import os
 import asyncpg
+import hashlib
+import hmac
+import json
+from urllib.parse import parse_qsl
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -33,16 +37,18 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                # ---- ЖЕСТКИЙ СБРОС (пока тестируем) ----
+                # ---- ЖЕСТКИЙ СБРОС (пока тестируем и меняем структуру) ----
                 print("🔄 Сносим старые таблицы...")
                 await conn.execute('DROP TABLE IF EXISTS reactions, messages, users CASCADE')
-                # ---------------------------------------
+                # ----------------------------------------------------------
 
-                # ---- Создание таблиц заново ----
+                # ---- Создание таблиц с новыми колонками ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
-                        balance INTEGER DEFAULT 0
+                        balance INTEGER DEFAULT 0,
+                        first_name TEXT,
+                        username TEXT
                     );
                 ''')
                 await conn.execute('''
@@ -79,16 +85,13 @@ async def init_db():
 async def cmd_start(message: Message):
     if message.chat.type == "private":
         text = (
-            "👋 Привет! Я бот для начисления баллов в чате.\n\n"
+            "👋 Привет! Я бот для начисления баллов.\n\n"
             "<b>Как это работает:</b>\n"
-            "1. Ты пишешь сообщение в наш чат.\n"
-            "2. Другие участники ставят на него реакции.\n"
-            "3. За каждую новую реакцию ты получаешь 1 балл.\n\n"
-            "<b>Правила и штрафы:</b>\n"
+            "1. В чате: другие ставят реакции на твое сообщение — баллы тебе.\n"
+            "2. В канале: ты ставишь реакции на посты — баллы тебе.\n\n"
+            "<b>Правила:</b>\n"
             "Запрещено накручивать баллы (ставить, убирать и снова ставить реакцию).\n"
-            "Если бот заметит это:\n"
-            "• 1-й раз: баллы не начислятся.\n"
-            "• 2-й раз: штраф -5 баллов.\n\n"
+            "Штраф за махинации: -5 баллов нарушителю.\n\n"
             "👇 Используй кнопки ниже."
         )
         await message.answer(text, reply_markup=main_kb, parse_mode="HTML")
@@ -127,11 +130,20 @@ async def save_msg(message: Message):
     if not message.from_user or message.from_user.is_bot:
         return
     async with db_pool.acquire() as conn:
+        # Сохраняем сообщение
         await conn.execute('''
             INSERT INTO messages (chat_id, message_id, author_id)
             VALUES ($1, $2, $3)
             ON CONFLICT (chat_id, message_id) DO NOTHING;
         ''', message.chat.id, message.message_id, message.from_user.id)
+        
+        # Создаем/обновляем юзера
+        await conn.execute('''
+            INSERT INTO users (user_id, first_name, username) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE 
+            SET first_name = EXCLUDED.first_name, username = EXCLUDED.username;
+        ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
 
 # ================== Реакции ==================
@@ -164,16 +176,24 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 print(f"❌ [ЛОГ] Сообщение {msg_id} не найдено в базе.")
                 return
             target_user_id = msg['author_id']
-
-        if target_user_id == user.id:
-            return
+            
+            # Проверка на свою реакцию (ТОЛЬКО для чатов)
+            if target_user_id == user.id:
+                return
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    'INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING',
-                    target_user_id
-                )
+                # Создаем/обновляем автора (или того, кому начисляем)
+                await conn.execute('''
+                    INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
+                ''', target_user_id, user.first_name, user.username)
+                
+                # Создаем/обновляем нарушителя (чтобы было куда списывать штраф)
+                await conn.execute('''
+                    INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
+                ''', user.id, user.first_name, user.username)
 
                 row = await conn.fetchrow('''
                     SELECT id, max_rewarded, rewarded_emojis, toggles
@@ -232,17 +252,89 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         print(f"⚠️ [ЛОГ] {user.first_name} переставил. Баллы не начислены.")
                     else:
                         fine = 5
+                        # Штраф летит самому нарушителю (user.id)
                         await conn.execute(
                             'UPDATE users SET balance = balance - $1 WHERE user_id = $2',
-                            fine, target_user_id
+                            fine, user.id
                         )
-                        print(f"❌ [ЛОГ] {user.first_name} нарушает правила. Штраф -{fine} баллов.")
+                        print(f"❌ [ЛОГ] {user.first_name} нарушает правила. Штраф -{fine} баллов ему.")
 
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка обработки реакции: {e}")
 
 
-# ================== Веб-сервер ==================
+# ================== ВАЛИДАЦИЯ TELEGRAM INIT DATA ==================
+def validate_init_data(init_data: str) -> dict | None:
+    """Проверяет подпись initData от Telegram Mini App и возвращает данные юзера."""
+    try:
+        parsed_data = dict(parse_qsl(init_data))
+        if "hash" not in parsed_data:
+            return None
+        
+        received_hash = parsed_data.pop("hash")
+        
+        # Сортируем и склеиваем данные
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+        
+        # Секретный ключ = HMAC_SHA256(BOT_TOKEN, "WebAppData")
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        
+        # Безопасное сравнение (защита от timing-атак)
+        if hmac.compare_digest(calculated_hash, received_hash):
+            return json.loads(parsed_data.get("user", "{}"))
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка валидации initData: {e}")
+        return None
+
+
+# ================== API ЭНДПОИНТЫ ДЛЯ MINI APP ==================
+async def api_balance(request):
+    init_data = request.query.get("initData")
+    if not init_data:
+        return web.json_response({"error": "No initData"}, status=401)
+    
+    user_data = validate_init_data(init_data)
+    if not user_data:
+        return web.json_response({"error": "Invalid initData"}, status=403)
+    
+    user_id = user_data.get("id")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT balance FROM users WHERE user_id = $1', user_id)
+    
+    balance = row['balance'] if row else 0
+    return web.json_response({"balance": balance, "user_id": user_id})
+
+
+async def api_top(request):
+    init_data = request.query.get("initData")
+    if not init_data:
+        return web.json_response({"error": "No initData"}, status=401)
+    
+    if not validate_init_data(init_data):
+        return web.json_response({"error": "Invalid initData"}, status=403)
+    
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT user_id, balance, first_name, username 
+            FROM users 
+            ORDER BY balance DESC 
+            LIMIT 5
+        ''')
+    
+    top_list = [
+        {
+            "user_id": r["user_id"],
+            "balance": r["balance"],
+            "first_name": r["first_name"] or "Аноним",
+            "username": r["username"]
+        } for r in rows
+    ]
+    return web.json_response({"top": top_list})
+
+
+# ================== ВЕБ-СЕРВЕР ==================
 async def handle_ping(request):
     return web.Response(text="Bot is alive")
 
@@ -250,6 +342,10 @@ async def handle_ping(request):
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
+    # API ручки
+    app.router.add_get('/api/balance', api_balance)
+    app.router.add_get('/api/top', api_top)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
