@@ -33,35 +33,33 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                # ---- УМНАЯ МИГРАЦИЯ (сработает только 1 раз, если база старая) ----
-                table_exists = await conn.fetchval('''
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables 
-                        WHERE table_name = 'reactions'
-                    )
-                ''')
+                # ---- ЖЕСТКАЯ ПРОВЕРКА ВСЕХ ТАБЛИЦ ----
+                # Если таблицы существуют, но в них нет нужных колонок — сносим их.
                 
-                if table_exists:
-                    has_new_columns = await conn.fetchval('''
-                        SELECT EXISTS (
-                            SELECT 1 FROM information_schema.columns 
-                            WHERE table_name = 'reactions' AND column_name = 'max_rewarded'
-                        )
-                    ''')
-                    if not has_new_columns:
-                        print("🔄 Обнаружена старая структура базы. Пересоздаю таблицу reactions...")
+                # 1. Проверка messages
+                msg_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'messages')")
+                if msg_table_exists:
+                    has_author = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'author_id')")
+                    if not has_author:
+                        print("🔄 Удаляю старую кривую таблицу messages...")
+                        await conn.execute('DROP TABLE messages CASCADE')
+
+                # 2. Проверка reactions
+                react_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'reactions')")
+                if react_table_exists:
+                    has_max_rewarded = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'reactions' AND column_name = 'max_rewarded')")
+                    if not has_max_rewarded:
+                        print("🔄 Удаляю старую кривую таблицу reactions...")
                         await conn.execute('DROP TABLE reactions CASCADE')
 
-                # Убираем старую колонку is_premium, если она осталась
-                has_premium_col = await conn.fetchval('''
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = 'users' AND column_name = 'is_premium'
-                    )
-                ''')
-                if has_premium_col:
-                    await conn.execute('ALTER TABLE users DROP COLUMN is_premium')
-                # -------------------------------------------------------------------
+                # 3. Проверка users
+                users_table_exists = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users')")
+                if users_table_exists:
+                    has_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
+                    if not has_balance:
+                        print("🔄 Удаляю старую кривую таблицу users...")
+                        await conn.execute('DROP TABLE users CASCADE')
+                # ---------------------------------------
 
                 # ---- Создание таблиц (если их нет) ----
                 await conn.execute('''
@@ -118,7 +116,6 @@ async def cmd_start(message: Message):
         )
         await message.answer(text, reply_markup=main_kb, parse_mode="HTML")
     else:
-        # В группах отвечаем текстом, но БЕЗ клавиатуры
         text = "👋 Привет! Я работаю в чате. Пиши сообщения и собирай реакции!"
         await message.answer(text)
 
@@ -163,6 +160,7 @@ async def save_msg(message: Message):
 # ================== Реакции ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
+    print(f"\n📥 [ЛОГ] Реакция на сообщение {reaction.message_id}")
     user = reaction.user
     if not user:
         return
@@ -170,6 +168,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
     old = {r.emoji for r in reaction.old_reaction if r.type == 'emoji'}
     new = {r.emoji for r in reaction.new_reaction if r.type == 'emoji'}
     added = new - old
+    
     if not added:
         return
 
@@ -186,10 +185,12 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                     chat_id, msg_id
                 )
             if not msg:
+                print(f"❌ [ЛОГ] Сообщение {msg_id} не найдено в базе.")
                 return
             target_user_id = msg['author_id']
 
         if target_user_id == user.id:
+            print("⚠️ [ЛОГ] Своя реакция. Игнор.")
             return
 
         async with db_pool.acquire() as conn:
@@ -218,7 +219,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
                         reward, target_user_id
                     )
-                    print(f"✅ {user.first_name} поставил {sorted(new)}. Юзеру {target_user_id} +{reward} балл(ов).")
+                    print(f"✅ [ЛОГ] {user.first_name} поставил {sorted(new)}. +{reward} балл(ов).")
                     return
 
                 max_rewarded = row['max_rewarded'] or 0
@@ -249,21 +250,21 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
                         total_reward, target_user_id
                     )
-                    print(f"✅ {user.first_name} добавил {sorted(added)}. Юзеру {target_user_id} +{total_reward} балл(ов).")
+                    print(f"✅ [ЛОГ] {user.first_name} добавил {sorted(added)}. +{total_reward} балл(ов).")
 
                 if new_manipulations > 0:
                     if new_toggles == 1:
-                        print(f"⚠️ {user.first_name} переставил реакцию на сообщении {msg_id}. Баллы не начислены.")
+                        print(f"⚠️ [ЛОГ] {user.first_name} переставил. Баллы не начислены.")
                     else:
                         fine = 5
                         await conn.execute(
                             'UPDATE users SET balance = balance - $1 WHERE user_id = $2',
                             fine, target_user_id
                         )
-                        print(f"❌ {user.first_name} нарушает правила (повторное переставление). Штраф -{fine} баллов юзеру {target_user_id}.")
+                        print(f"❌ [ЛОГ] {user.first_name} нарушает правила. Штраф -{fine} баллов.")
 
     except Exception as e:
-        print(f"❌ Ошибка обработки реакции: {e}")
+        print(f"❌ [ЛОГ] Ошибка обработки реакции: {e}")
 
 
 # ================== Веб-сервер ==================
