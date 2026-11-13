@@ -51,7 +51,6 @@ async function loadBalance() {
     
     data.my_chats.forEach(item => {
         const icon = item.chat_type === 'channel' ? '📢' : '💬';
-        // ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЙ ЮЗЕРНЕЙМ БОТА
         const link = `https://t.me/${data.bot_username}?start=ref_${item.chat_id}_${data.user_id}`;
         
         const div = document.createElement('div');
@@ -121,6 +120,7 @@ async function loadHistory() {
         let title = '';
         let amountStr = '';
         let amountClass = item.amount > 0 ? 'positive' : 'negative';
+        let msgTextHtml = item.message_text ? `<div class="subtitle">"${item.message_text}"</div>` : '';
         
         if (!chatId && item.chat_title) {
             title += `[${item.chat_title}] `;
@@ -149,7 +149,16 @@ async function loadHistory() {
 
         const div = document.createElement('div');
         div.className = 'list-item';
-        div.innerHTML = `<div class="title">${title}</div><div class="amount ${amountClass}">${amountStr}</div>`;
+        div.style.flexDirection = 'column';
+        div.style.alignItems = 'flex-start';
+        
+        div.innerHTML = `
+            <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+                <div class="title">${title}</div>
+                <div class="amount ${amountClass}">${amountStr}</div>
+            </div>
+            ${msgTextHtml}
+        `;
         historyList.appendChild(div);
     });
 }
