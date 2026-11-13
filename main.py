@@ -1,5 +1,6 @@
 import asyncio
 import os
+import os.path
 import asyncpg
 import hashlib
 import hmac
@@ -41,7 +42,6 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                # ---- Миграция: убираем старую колонку balance, если она есть ----
                 has_old_balance = await conn.fetchval('''
                     SELECT EXISTS (
                         SELECT 1 FROM information_schema.columns 
@@ -52,7 +52,6 @@ async def init_db():
                     print("🔄 Миграция: убираем общий balance из users...")
                     await conn.execute('ALTER TABLE users DROP COLUMN balance')
 
-                # ---- Базовые таблицы ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -105,7 +104,6 @@ async def init_db():
                     );
                 ''')
                 
-                # ---- Балансы по чатам ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS balances (
                         chat_id BIGINT NOT NULL,
@@ -168,7 +166,6 @@ async def cmd_start(message: Message):
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
-# ================== БАЛАНС ==================
 @dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}), F.chat.type != "channel")
 async def cmd_balance(message: Message):
     if not message.from_user: return
@@ -206,7 +203,6 @@ async def cmd_balance(message: Message):
         await message.answer(f"💰 {message.from_user.first_name}, твой баланс в этом чате: {balance} баллов.")
 
 
-# ================== СБРОС ==================
 @dp.message(F.text == "🗑 Сбросить прогресс", F.chat.type == "private")
 async def cmd_reset_menu(message: Message):
     user_id = message.from_user.id
@@ -290,7 +286,6 @@ async def save_msg(message: Message):
         ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
 
-# ================== ПОСТ В КАНАЛЕ ==================
 @dp.channel_post()
 async def handle_channel_post(message: Message):
     if message.chat.type != "channel": return
@@ -305,7 +300,6 @@ async def handle_channel_post(message: Message):
                 ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
             ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
-    # Текст кнопки обновлен
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👀 Забрать баллы", callback_data=f"earn_{message.message_id}")]
     ])
@@ -315,7 +309,6 @@ async def handle_channel_post(message: Message):
         print(f"❌ [КАНАЛ] Не удалось добавить кнопку: {e}")
 
 
-# ================== КНОПКА В КАНАЛЕ ==================
 @dp.callback_query(F.data.startswith("earn_"))
 async def handle_earn_button(callback: CallbackQuery):
     if not callback.message:
@@ -393,7 +386,6 @@ async def handle_earn_button(callback: CallbackQuery):
         await callback.answer("Ошибка сервера", show_alert=True)
 
 
-# ================== РЕАКЦИИ В ЧАТАХ ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
     user = reaction.user
@@ -476,7 +468,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
 
-# ================== ВАЛИДАЦИЯ MINI APP ==================
 def validate_init_data(init_data: str) -> dict | None:
     try:
         parsed_data = dict(parse_qsl(init_data))
@@ -536,6 +527,9 @@ async def start_web_server():
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
+    
+    app.router.add_static('/webapp/', path=os.path.join(os.path.dirname(__file__), 'webapp'), name='webapp_static')
+    
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
