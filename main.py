@@ -24,6 +24,7 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 
 db_pool = None
 bot = None
+BOT_USERNAME = ""
 dp = Dispatcher()
 
 
@@ -181,28 +182,59 @@ async def track_chat_owner(update: ChatMemberUpdated):
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
+        ref_text = ""
         if message.text and message.text.startswith("/start ref_"):
             try:
-                _, ref_data = message.text.split()
-                _, chat_id_str, referrer_id_str = ref_data.split("_")
-                chat_id = int(chat_id_str)
-                referrer_id = int(referrer_id_str)
-                referred_id = message.from_user.id
-                
-                if referrer_id != referred_id:
-                    async with db_pool.acquire() as conn:
-                        exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
-                        if not exists:
-                            check_time = datetime.now() + timedelta(hours=1)
-                            await conn.execute('''
-                                INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
-                                VALUES ($1, $2, $3, 'pending', $4)
-                            ''', referrer_id, referred_id, chat_id, check_time)
-                            print(f"🤝 [РЕФ] {referred_id} приглашен в {chat_id} от {referrer_id}.")
+                parts = message.text.split()
+                if len(parts) > 1 and parts[1].startswith("ref_"):
+                    _, chat_id_str, referrer_id_str = parts[1].split("_")
+                    chat_id = int(chat_id_str)
+                    referrer_id = int(referrer_id_str)
+                    referred_id = message.from_user.id
+                    
+                    if referrer_id != referred_id:
+                        async with db_pool.acquire() as conn:
+                            chat_info = await conn.fetchrow('SELECT title FROM managed_chats WHERE chat_id = $1', chat_id)
+                            chat_title = chat_info['title'] if chat_info else "Неизвестный чат"
+                            
+                            exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
+                            if not exists:
+                                check_time = datetime.now() + timedelta(hours=1)
+                                await conn.execute('''
+                                    INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
+                                    VALUES ($1, $2, $3, 'pending', $4)
+                                ''', referrer_id, referred_id, chat_id, check_time)
+                                
+                                invite_link = "Не удалось получить ссылку."
+                                try:
+                                    try:
+                                        member = await bot.get_chat_member(chat_id, referred_id)
+                                        if member.status in ['member', 'administrator', 'creator']:
+                                            invite_link = "Ты уже состоишь в этом чате. Ожидай проверки через 1 час."
+                                        else:
+                                            raise Exception("Not in chat")
+                                    except Exception:
+                                        chat = await bot.get_chat(chat_id)
+                                        if chat.invite_link:
+                                            invite_link = chat.invite_link
+                                        elif chat.username:
+                                            invite_link = f"https://t.me/{chat.username}"
+                                        else:
+                                            inv = await bot.create_chat_invite_link(chat_id, member_limit=1)
+                                            invite_link = inv.invite_link
+                                except Exception as e:
+                                    print(f"Ошибка при получении ссылки на чат: {e}")
+                                    
+                                ref_text = (
+                                    f"👋 Привет! Тебя пригласили в чат <b>{chat_title}</b>.\n\n"
+                                    f"Чтобы пригласивший получил +10 баллов, тебе нужно зайти в чат и пробыть там 1 час.\n\n"
+                                    f"👇 Твоя ссылка:\n{invite_link}\n\n"
+                                )
             except Exception as e:
                 print(f"❌ Ошибка парсинга рефки: {e}")
 
         text = (
+            ref_text + 
             "👋 Привет! Я бот для начисления баллов в чате и на канале.\n\n"
             "💬 <b>В ЧАТЕ:</b> другие ставят реакции на твои сообщения — баллы тебе.\n"
             "📢 <b>В КАНАЛЕ:</b> жми кнопку «👀 Забрать баллы» под постом.\n"
@@ -245,8 +277,7 @@ async def cmd_ref_menu(message: Message):
 @dp.callback_query(F.data.startswith("getref_"))
 async def handle_getref(callback: CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
-    bot_info = await bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start=ref_{chat_id}_{callback.from_user.id}"
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}_{callback.from_user.id}"
     
     text = (
         f"🔗 Твоя ссылка для приглашения:\n\n"
@@ -595,7 +626,8 @@ async def api_balance(request):
         "user_id": user_id,
         "total_balance": total,
         "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows],
-        "my_chats": [{"chat_id": r["chat_id"], "title": r["title"], "chat_type": r["chat_type"]} for r in my_chats]
+        "my_chats": [{"chat_id": r["chat_id"], "title": r["title"], "chat_type": r["chat_type"]} for r in my_chats],
+        "bot_username": BOT_USERNAME
     })
 
 
@@ -695,7 +727,7 @@ async def start_web_server():
 
 
 async def main():
-    global bot
+    global bot, BOT_USERNAME
     if not BOT_TOKEN: raise RuntimeError("❌ BOT_TOKEN не задан!")
     if not DATABASE_URL: raise RuntimeError("❌ DATABASE_URL не задан!")
     
@@ -703,6 +735,9 @@ async def main():
     await start_web_server()
     
     bot = Bot(token=BOT_TOKEN)
+    me = await bot.get_me()
+    BOT_USERNAME = me.username
+    
     await bot.delete_webhook(drop_pending_updates=True)
     
     asyncio.create_task(check_referrals_loop())
