@@ -9,11 +9,10 @@ from urllib.parse import parse_qsl
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import (
     Message, MessageReactionUpdated, ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated,
-    CommandObject
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated
 )
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
