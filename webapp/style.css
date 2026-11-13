@@ -24,11 +24,13 @@ header h1 { font-size: 22px; font-weight: 600; }
 
 h2 { font-size: 16px; color: var(--hint-color); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
 .list { display: flex; flex-direction: column; gap: 8px; }
-.list-item { background-color: var(--secondary-bg); padding: 16px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; }
+.list-item { background-color: var(--secondary-bg); padding: 16px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .list-item .title { font-weight: 500; font-size: 16px; }
 .list-item .amount { font-weight: 700; font-size: 18px; color: var(--button-color); }
 .list-item .amount.negative { color: #ff4a4a; }
 .list-item .amount.positive { color: #4cd964; }
+
+.list-item .subtitle { font-size: 13px; color: var(--hint-color); font-style: italic; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
 
 .history-controls select { width: 100%; padding: 12px; border-radius: 12px; background: var(--secondary-bg); color: var(--text-color); border: 1px solid var(--hint-color); font-size: 16px; outline: none; }
 
