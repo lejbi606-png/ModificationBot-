@@ -18,7 +18,6 @@ async function fetchAPI(endpoint, params = "") {
     }
 }
 
-// ================== ВКЛАДКИ ==================
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
@@ -31,14 +30,12 @@ function switchTab(tabName) {
     }
 }
 
-// ================== БАЛАНС И РЕФКИ ==================
 async function loadBalance() {
     const data = await fetchAPI('balance');
     if (!data) return;
 
     document.getElementById('total-balance').innerText = data.total_balance;
 
-    // Список балансов
     const balancesList = document.getElementById('balances-list');
     balancesList.innerHTML = data.balances.length ? '' : '<div class="loading">У тебя пока нет баллов</div>';
     data.balances.forEach(item => {
@@ -49,13 +46,13 @@ async function loadBalance() {
         balancesList.appendChild(div);
     });
 
-    // Реферальные ссылки
     const refList = document.getElementById('ref-list');
     refList.innerHTML = data.my_chats.length ? '' : '<div class="loading">Ты пока не в одном чате</div>';
     
     data.my_chats.forEach(item => {
         const icon = item.chat_type === 'channel' ? '📢' : '💬';
-        const link = `https://t.me/${tg.initDataUnsafe.user.username || 'bot'}?start=ref_${item.chat_id}_${data.user_id}`;
+        // Получаем username бота из переменных окружения или захардкодим имя, если нужно
+        const link = `https://t.me/${window.BOT_USERNAME || 'твой_бот'}?start=ref_${item.chat_id}_${data.user_id}`;
         
         const div = document.createElement('div');
         div.className = 'list-item';
@@ -78,7 +75,6 @@ function copyLink(link) {
     });
 }
 
-// ================== ТОП ==================
 async function loadTop() {
     const data = await fetchAPI('top');
     if (!data) return;
@@ -92,21 +88,19 @@ async function loadTop() {
     });
 }
 
-// ================== ИСТОРИЯ ==================
 let historyChatsLoaded = false;
 
 async function loadHistory() {
     const select = document.getElementById('history-chat-select');
     const historyList = document.getElementById('history-list');
     
-    // Подгружаем список чатов для селектора (только если админ)
     if (!historyChatsLoaded) {
-        const data = await fetchAPI('balance'); // Берем из баланса my_chats
+        const data = await fetchAPI('balance');
         if (data && data.my_chats) {
             data.my_chats.forEach(chat => {
                 const opt = document.createElement('option');
                 opt.value = chat.chat_id;
-                opt.innerText = `Админ: ${chat.title}`;
+                opt.innerText = `Админ: ${chat.title || 'Без названия'}`;
                 select.appendChild(opt);
             });
             historyChatsLoaded = true;
@@ -118,7 +112,7 @@ async function loadHistory() {
     const data = await fetchAPI('history', params);
 
     historyList.innerHTML = '';
-    if (!data || !data.history.length) {
+    if (!data || !data.history || !data.history.length) {
         historyList.innerHTML = '<div class="loading">История пуста</div>';
         return;
     }
@@ -128,25 +122,29 @@ async function loadHistory() {
         let amountStr = '';
         let amountClass = item.amount > 0 ? 'positive' : 'negative';
         
-        if (item.type === 'reaction_earn') {
-            title = `Реакция от ${item.sender_name || 'Кто-то'}`;
-            amountStr = `+${item.amount}`;
-        } else if (item.type === 'channel_earn') {
-            title = `Кнопка в канале`;
-            amountStr = `+${item.amount}`;
-        } else if (item.type === 'fine') {
-            title = `Штраф (накрутка)`;
-            amountStr = `${item.amount}`;
-        } else if (item.type === 'referral') {
-            title = `Бонус за друга`;
-            amountStr = `+${item.amount}`;
-        } else {
-            title = item.type;
-            amountStr = item.amount > 0 ? `+${item.amount}` : item.amount;
+        if (!chatId && item.chat_title) {
+            title += `[${item.chat_title}] `;
         }
 
-        if (chatId && item.sender_name && item.receiver_name) {
-             title = `${item.sender_name} ➔ ${item.receiver_name}`;
+        if (item.type === 'reaction_earn') {
+            if (chatId) {
+                title += `${item.sender_name || 'Кто-то'} ➔ ${item.receiver_name || 'Кому-то'}`;
+            } else {
+                title += `Реакция от ${item.sender_name || 'Кто-то'}`;
+            }
+            amountStr = `+${item.amount}`;
+        } else if (item.type === 'channel_earn') {
+            title += `Забрал балл в канале`;
+            amountStr = `+${item.amount}`;
+        } else if (item.type === 'fine') {
+            title += `Штраф за накрутку`;
+            amountStr = `${item.amount}`;
+        } else if (item.type === 'referral') {
+            title += `Бонус за друга`;
+            amountStr = `+${item.amount}`;
+        } else {
+            title += item.type;
+            amountStr = item.amount > 0 ? `+${item.amount}` : item.amount;
         }
 
         const div = document.createElement('div');
@@ -156,6 +154,5 @@ async function loadHistory() {
     });
 }
 
-// Запуск
 loadBalance();
 loadTop();
