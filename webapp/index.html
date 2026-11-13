@@ -1,1 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Мой Профиль</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 id="greeting">Привет!</h1>
+        </header>
 
+        <div class="total-balance-card">
+            <span class="label">Общий баланс</span>
+            <span class="value" id="total-balance">0</span>
+            <span class="currency">баллов</span>
+        </div>
+
+        <section class="balances-section">
+            <h2>Где ты заработал</h2>
+            <div id="balances-list" class="list">
+                <div class="loading">Загрузка...</div>
+            </div>
+        </section>
+
+        <section class="top-section">
+            <h2>🏆 Топ-5</h2>
+            <div id="top-list" class="list">
+                <div class="loading">Загрузка...</div>
+            </div>
+        </section>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
