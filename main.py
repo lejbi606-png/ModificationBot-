@@ -6,9 +6,10 @@ import hashlib
 import hmac
 import json
 from urllib.parse import parse_qsl
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, MessageReactionUpdated, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated
@@ -28,7 +29,7 @@ dp = Dispatcher()
 
 def get_main_kb(is_private: bool) -> ReplyKeyboardMarkup:
     if is_private:
-        buttons = [[KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🗑 Сбросить прогресс")]]
+        buttons = [[KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🔗 Мои ссылки")], [KeyboardButton(text="🗑 Сбросить прогресс")]]
     else:
         buttons = [[KeyboardButton(text="💰 Баланс")]]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -42,14 +43,9 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                has_old_balance = await conn.fetchval('''
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = 'users' AND column_name = 'balance'
-                    )
-                ''')
+                # Миграция старого баланса
+                has_old_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
                 if has_old_balance:
-                    print("🔄 Миграция: убираем общий balance из users...")
                     await conn.execute('ALTER TABLE users DROP COLUMN balance')
 
                 await conn.execute('''
@@ -103,7 +99,6 @@ async def init_db():
                         linked_chat_id BIGINT
                     );
                 ''')
-                
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS balances (
                         chat_id BIGINT NOT NULL,
@@ -112,7 +107,38 @@ async def init_db():
                         PRIMARY KEY (chat_id, user_id)
                     );
                 ''')
-                await conn.execute('CREATE INDEX IF NOT EXISTS idx_balances_user ON balances(user_id)')
+                
+                # НОВЫЕ ТАБЛИЦЫ
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS chat_admins (
+                        chat_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        PRIMARY KEY (chat_id, user_id)
+                    );
+                ''')
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS transactions (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        sender_id BIGINT,
+                        receiver_id BIGINT NOT NULL,
+                        amount INTEGER NOT NULL,
+                        type TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                ''')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS referrals (
+                        referrer_id BIGINT NOT NULL,
+                        referred_id BIGINT NOT NULL,
+                        chat_id BIGINT NOT NULL,
+                        status TEXT DEFAULT 'pending',
+                        check_at TIMESTAMP NOT NULL,
+                        PRIMARY KEY (referred_id, chat_id)
+                    );
+                ''')
                 
             print("✅ База данных готова.")
             return
@@ -123,6 +149,7 @@ async def init_db():
             await asyncio.sleep(5)
 
 
+# ================== ОТСЛЕЖИВАНИЕ ЧАТОВ И АДМИНОВ ==================
 @dp.my_chat_member()
 async def track_chat_owner(update: ChatMemberUpdated):
     if update.new_chat_member.status in ("administrator", "member"):
@@ -130,42 +157,118 @@ async def track_chat_owner(update: ChatMemberUpdated):
         try:
             admins = await bot.get_chat_administrators(chat.id)
             owner_id = None
+            admin_ids = []
             for admin in admins:
+                admin_ids.append(admin.user.id)
                 if admin.status == "creator":
                     owner_id = admin.user.id
-                    break
-            if not owner_id:
-                return
 
             linked_id = getattr(chat, 'linked_chat_id', None)
             async with db_pool.acquire() as conn:
-                await conn.execute('INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING', owner_id)
-                await conn.execute('''
-                    INSERT INTO managed_chats (chat_id, owner_id, title, chat_type, linked_chat_id)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (chat_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, title = EXCLUDED.title, chat_type = EXCLUDED.chat_type, linked_chat_id = EXCLUDED.linked_chat_id
-                ''', chat.id, owner_id, chat.title, chat.type, linked_id)
-            print(f"👑 [ВЛАДЕЛЕЦ] {chat.title}. Владелец {owner_id}.")
+                # Сохраняем владельца
+                if owner_id:
+                    await conn.execute('INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING', owner_id)
+                    await conn.execute('''
+                        INSERT INTO managed_chats (chat_id, owner_id, title, chat_type, linked_chat_id)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (chat_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, title = EXCLUDED.title, chat_type = EXCLUDED.chat_type, linked_chat_id = EXCLUDED.linked_chat_id
+                    ''', chat.id, owner_id, chat.title, chat.type, linked_id)
+                
+                # Обновляем кэш админов
+                await conn.execute('DELETE FROM chat_admins WHERE chat_id = $1', chat.id)
+                for adm in admin_ids:
+                    await conn.execute('INSERT INTO chat_admins (chat_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', chat.id, adm)
+                    
+            print(f"👑 [ЧАТ] {chat.title}. Админов сохранено: {len(admin_ids)}.")
         except Exception as e:
-            print(f"❌ Не удалось получить владельца {chat.id}: {e}")
+            print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
+# ================== СТАРТ И РЕФЕРАЛКИ ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
+        # Обработка реферальной ссылки
+        if message.text and message.text.startswith("/start ref_"):
+            try:
+                _, ref_data = message.text.split()
+                _, chat_id_str, referrer_id_str = ref_data.split("_")
+                chat_id = int(chat_id_str)
+                referrer_id = int(referrer_id_str)
+                referred_id = message.from_user.id
+                
+                if referrer_id != referred_id: # Защита от самого себя
+                    async with db_pool.acquire() as conn:
+                        # Проверяем, есть ли уже запись
+                        exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
+                        if not exists:
+                            check_time = datetime.now() + timedelta(hours=1)
+                            await conn.execute('''
+                                INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
+                                VALUES ($1, $2, $3, 'pending', $4)
+                            ''', referrer_id, referred_id, chat_id, check_time)
+                            print(f"🤝 [РЕФ] {referred_id} приглашен в {chat_id} от {referrer_id}. Проверка через час.")
+            except Exception as e:
+                print(f"❌ Ошибка парсинга рефки: {e}")
+
         text = (
             "👋 Привет! Я бот для начисления баллов в чате и на канале.\n\n"
-            "💬 <b>В ЧАТЕ:</b> другие ставят реакции на твои сообщения — баллы тебе (в этом чате).\n"
-            "📢 <b>В КАНАЛЕ:</b> жми кнопку «👀 Забрать баллы» под постом (1 нажатие на пост).\n"
-            "💎 <b>Premium:</b> в чате можно поставить до 3 реакций на одно сообщение.\n\n"
-            "⚠️ <b>Античит:</b> за накрутку сначала предупреждение, потом штраф -5 баллов.\n\n"
-            "💰 <b>Балансы теперь раздельные по чатам.</b> Жми «Баланс» — увидишь сколько у тебя в каждом."
+            "💬 <b>В ЧАТЕ:</b> другие ставят реакции на твои сообщения — баллы тебе.\n"
+            "📢 <b>В КАНАЛЕ:</b> жми кнопку «👀 Забрать баллы» под постом.\n"
+            "💎 <b>Premium:</b> в чате можно поставить до 3 реакций на одно сообщение.\n"
+            "👑 <b>Модераторы:</b> приносят x5 баллов (и штрафы у них тоже x5).\n\n"
+            "⚠️ <b>Античит:</b> за накрутку сначала предупреждение, потом штраф.\n\n"
+            "💰 Жми «Баланс» — увидишь сколько у тебя в каждом чате."
         )
         await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
     else:
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
+# ================== МЕНЮ РЕФЕРАЛОК ==================
+@dp.message(F.text == "🔗 Мои ссылки", F.chat.type == "private")
+async def cmd_ref_menu(message: Message):
+    user_id = message.from_user.id
+    async with db_pool.acquire() as conn:
+        # Ищем чаты, где юзер есть в balances или chat_admins
+        rows = await conn.fetch('''
+            SELECT DISTINCT m.chat_id, m.title, m.chat_type 
+            FROM managed_chats m
+            LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
+            LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
+            WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL
+        ''', user_id)
+        
+    if not rows:
+        await message.answer("Ты пока не участвуешь ни в одном чате с ботом.")
+        return
+
+    buttons = []
+    for r in rows:
+        title = r['title'] or str(r['chat_id'])
+        icon = "📢" if r['chat_type'] == "channel" else "💬"
+        buttons.append([InlineKeyboardButton(text=f"{icon} {title}", callback_data=f"getref_{r['chat_id']}")])
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("Выбери чат, для которого хочешь получить реферальную ссылку:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("getref_"))
+async def handle_getref(callback: CallbackQuery):
+    chat_id = int(callback.data.split("_")[1])
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start=ref_{chat_id}_{callback.from_user.id}"
+    
+    text = (
+        f"🔗 Твоя ссылка для приглашения:\n\n"
+        f"<code>{link}</code>\n\n"
+        f"<i>Скопируй её и отправь другу. Когда он зайдет по ней и пробудет в чате 1 час, ты получишь +10 баллов!</i>"
+    )
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
+
+
+# ================== БАЛАНС И СБРОС (как было) ==================
 @dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}), F.chat.type != "channel")
 async def cmd_balance(message: Message):
     if not message.from_user: return
@@ -176,10 +279,8 @@ async def cmd_balance(message: Message):
         async with db_pool.acquire() as conn:
             rows = await conn.fetch('''
                 SELECT b.chat_id, b.balance, m.title, m.chat_type
-                FROM balances b
-                LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
-                WHERE b.user_id = $1 AND b.balance != 0
-                ORDER BY b.balance DESC
+                FROM balances b LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
+                WHERE b.user_id = $1 AND b.balance != 0 ORDER BY b.balance DESC
             ''', user_id)
         
         if not rows:
@@ -191,14 +292,10 @@ async def cmd_balance(message: Message):
             title = r['title'] or f"Чат {r['chat_id']}"
             icon = "📢" if r['chat_type'] == "channel" else "💬"
             lines.append(f"{icon} {title}: <b>{r['balance']}</b> баллов")
-        
         await message.answer("\n".join(lines), parse_mode="HTML")
     else:
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2',
-                chat_id, user_id
-            )
+            row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
         balance = row['balance'] if row else 0
         await message.answer(f"💰 {message.from_user.first_name}, твой баланс в этом чате: {balance} баллов.")
 
@@ -206,7 +303,6 @@ async def cmd_balance(message: Message):
 @dp.message(F.text == "🗑 Сбросить прогресс", F.chat.type == "private")
 async def cmd_reset_menu(message: Message):
     user_id = message.from_user.id
-    
     async with db_pool.acquire() as conn:
         if user_id in ADMIN_IDS:
             rows = await conn.fetch('SELECT chat_id, title, chat_type, linked_chat_id FROM managed_chats')
@@ -223,28 +319,22 @@ async def cmd_reset_menu(message: Message):
         chat_id = r['chat_id']
         linked_id = r['linked_chat_id']
         if chat_id in shown: continue
-        
         title = r['title'] or str(chat_id)
         chat_type = "Канал" if r['chat_type'] == "channel" else "Чат"
         callback_data = f"resetchat_{chat_id}_{linked_id if linked_id else 0}"
-        
         buttons.append([InlineKeyboardButton(text=f"🗑 {chat_type}: {title}", callback_data=callback_data)])
         shown.add(chat_id)
         if linked_id: shown.add(linked_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Выбери чат для сброса (удалятся ВСЕ данные этого чата):", reply_markup=kb)
+    await message.answer("Выбери чат для сброса:", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("resetchat_"))
 async def handle_reset_chat(callback: CallbackQuery):
-    try:
-        parts = callback.data.split("_")
-        chat_id = int(parts[1])
-        linked_id = int(parts[2]) if parts[2] != "0" else None
-    except (ValueError, IndexError):
-        await callback.answer("Ошибка данных", show_alert=True)
-        return
+    parts = callback.data.split("_")
+    chat_id = int(parts[1])
+    linked_id = int(parts[2]) if parts[2] != "0" else None
 
     async with db_pool.acquire() as conn:
         owner_row = await conn.fetchrow('SELECT owner_id, title FROM managed_chats WHERE chat_id = $1', chat_id)
@@ -255,54 +345,48 @@ async def handle_reset_chat(callback: CallbackQuery):
             await callback.answer("⛔ Нет прав.", show_alert=True)
             return
 
-        chat_ids = [chat_id]
-        if linked_id:
-            chat_ids.append(linked_id)
-        
+        chat_ids = [chat_id] + ([linked_id] if linked_id else [])
         for cid in chat_ids:
             await conn.execute('DELETE FROM messages WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM reactions WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM channel_rewards WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM balances WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM transactions WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM referrals WHERE chat_id = $1', cid)
 
     await callback.answer("✅ Все данные чата сброшены!", show_alert=True)
     title = owner_row['title'] or chat_id
     try:
-        await callback.message.edit_text(f"🗑 Все данные для «{title}» удалены.\n(Балансы всех юзеров, реакции и сообщения обнулены)")
+        await callback.message.edit_text(f"🗑 Все данные для «{title}» удалены.")
     except Exception:
         pass
 
 
+# ================== СОХРАНЕНИЕ СООБЩЕНИЙ ==================
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def save_msg(message: Message):
     if not message.from_user or message.from_user.is_bot: return
     async with db_pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-        ''', message.chat.id, message.message_id, message.from_user.id)
+        await conn.execute('INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', message.chat.id, message.message_id, message.from_user.id)
         await conn.execute('''
             INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
             ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
         ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
 
+# ================== КАНАЛЫ ==================
 @dp.channel_post()
 async def handle_channel_post(message: Message):
     if message.chat.type != "channel": return
-    
     if message.from_user and not message.from_user.is_bot:
         async with db_pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-            ''', message.chat.id, message.message_id, message.from_user.id)
+            await conn.execute('INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', message.chat.id, message.message_id, message.from_user.id)
             await conn.execute('''
                 INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
             ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👀 Забрать баллы", callback_data=f"earn_{message.message_id}")]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Забрать баллы", callback_data=f"earn_{message.message_id}")]])
     try:
         await message.edit_reply_markup(reply_markup=kb)
     except Exception as e:
@@ -312,59 +396,41 @@ async def handle_channel_post(message: Message):
 @dp.callback_query(F.data.startswith("earn_"))
 async def handle_earn_button(callback: CallbackQuery):
     if not callback.message:
-        await callback.answer("Сообщение удалено.", show_alert=True)
         return
-
     user = callback.from_user
     channel_id = callback.message.chat.id
     msg_id = int(callback.data.split("_", 1)[1])
-    limit = 1
     
     try:
         async with db_pool.acquire() as conn:
-            author_row = await conn.fetchrow(
-                'SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2',
-                channel_id, msg_id
-            )
+            author_row = await conn.fetchrow('SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2', channel_id, msg_id)
             if author_row and author_row['author_id'] == user.id:
                 await callback.answer("❌ Вы не можете зарабатывать баллы на своих постах!", show_alert=True)
                 return
 
             async with conn.transaction():
-                row = await conn.fetchrow('''
-                    SELECT click_count FROM channel_rewards 
-                    WHERE chat_id = $1 AND message_id = $2 AND user_id = $3
-                ''', channel_id, msg_id, user.id)
+                row = await conn.fetchrow('SELECT click_count FROM channel_rewards WHERE chat_id = $1 AND message_id = $2 AND user_id = $3', channel_id, msg_id, user.id)
                 
                 reward_given = False
-
                 if not row:
-                    await conn.execute('''
-                        INSERT INTO channel_rewards (chat_id, message_id, user_id, click_count, max_rewarded)
-                        VALUES ($1, $2, $3, 1, 1)
-                    ''', channel_id, msg_id, user.id)
+                    await conn.execute('INSERT INTO channel_rewards (chat_id, message_id, user_id, click_count, max_rewarded) VALUES ($1, $2, $3, 1, 1)', channel_id, msg_id, user.id)
                     reward_given = True
                 else:
                     click_count = row['click_count'] + 1
-                    if click_count <= limit:
-                        await conn.execute('''
-                            UPDATE channel_rewards SET click_count = $1, max_rewarded = max_rewarded + 1
-                            WHERE chat_id = $2 AND message_id = $3 AND user_id = $4
-                        ''', click_count, channel_id, msg_id, user.id)
+                    if click_count <= 1:
+                        await conn.execute('UPDATE channel_rewards SET click_count = $1, max_rewarded = max_rewarded + 1 WHERE chat_id = $2 AND message_id = $3 AND user_id = $4', click_count, channel_id, msg_id, user.id)
                         reward_given = True
                     else:
-                        await conn.execute('''
-                            UPDATE channel_rewards SET click_count = $1
-                            WHERE chat_id = $2 AND message_id = $3 AND user_id = $4
-                        ''', click_count, channel_id, msg_id, user.id)
-                        
-                        if click_count == limit + 1:
+                        await conn.execute('UPDATE channel_rewards SET click_count = $1 WHERE chat_id = $2 AND message_id = $3 AND user_id = $4', click_count, channel_id, msg_id, user.id)
+                        if click_count == 2:
                             await callback.answer("⚠️ Лимит исчерпан. Баллы не начислены.", show_alert=True)
                         else:
+                            # Штраф
                             await conn.execute('''
                                 INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
                                 ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
                             ''', channel_id, user.id)
+                            await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, -5, 'fine')", channel_id, user.id)
                             await callback.answer("❌ Штраф -5 баллов за накрутку!", show_alert=True)
                         return
 
@@ -377,15 +443,14 @@ async def handle_earn_button(callback: CallbackQuery):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, 1)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + 1
                     ''', channel_id, user.id)
-                    
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, 1, 'channel_earn')", channel_id, user.id)
                     await callback.answer("✅ +1 балл!")
-                    print(f"✅ [КАНАЛ {channel_id}] {user.first_name} забрал балл. +1.")
-
     except Exception as e:
         print(f"❌ [КАНАЛ] Ошибка: {e}")
         await callback.answer("Ошибка сервера", show_alert=True)
 
 
+# ================== РЕАКЦИИ (С УЧЕТОМ МОДЕРАТОРОВ) ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
     user = reaction.user
@@ -403,11 +468,14 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         
         async with db_pool.acquire() as conn:
             msg = await conn.fetchrow('SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
-        if not msg: return
-        target_user_id = msg['author_id']
-        if target_user_id == user.id: return
+            if not msg: return
+            target_user_id = msg['author_id']
+            if target_user_id == user.id: return
+            
+            # ПРОВЕРКА: Модератор ли?
+            is_mod = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user.id)
+            multiplier = 5 if is_mod else 1
 
-        async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute('''
                     INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
@@ -421,15 +489,17 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 current_unique = len(new)
 
                 if row is None:
-                    reward = current_unique
+                    reward = current_unique * multiplier
                     await conn.execute('''
                         INSERT INTO reactions (chat_id, user_id, message_id, max_rewarded, rewarded_emojis, toggles)
                         VALUES ($1, $2, $3, $4, $5, 0)
                     ''', chat_id, user.id, msg_id, reward, list(new))
+                    
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
                     ''', chat_id, target_user_id, reward)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'reaction_earn')", chat_id, user.id, target_user_id, reward)
                     return
 
                 max_rewarded = row['max_rewarded'] or 0
@@ -448,26 +518,65 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         total_reward += 1
 
                 new_toggles = toggles + new_manipulations
-
-                await conn.execute('''
-                    UPDATE reactions SET max_rewarded = $1, rewarded_emojis = $2, toggles = $3 WHERE id = $4
-                ''', max_rewarded, list(rewarded_emojis), new_toggles, row['id'])
+                await conn.execute('UPDATE reactions SET max_rewarded = $1, rewarded_emojis = $2, toggles = $3 WHERE id = $4', max_rewarded, list(rewarded_emojis), new_toggles, row['id'])
 
                 if total_reward > 0:
+                    final_reward = total_reward * multiplier
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
-                    ''', chat_id, target_user_id, total_reward)
+                    ''', chat_id, target_user_id, final_reward)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'reaction_earn')", chat_id, user.id, target_user_id, final_reward)
 
                 if new_manipulations > 0 and new_toggles > 1:
+                    fine = 5 * multiplier
                     await conn.execute('''
-                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
-                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
-                    ''', chat_id, user.id)
+                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - $3
+                    ''', chat_id, user.id, fine)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'fine')", chat_id, user.id, -fine)
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
 
+# ================== ФОНОВАЯ ПРОВЕРКА РЕФЕРАЛОВ ==================
+async def check_referrals_loop():
+    while True:
+        try:
+            await asyncio.sleep(60) # Проверка раз в минуту
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT referrer_id, referred_id, chat_id FROM referrals WHERE status = 'pending' AND check_at <= NOW()")
+                
+            for r in rows:
+                try:
+                    # Проверяем, в чате ли юзер
+                    member = await bot.get_chat_member(r['chat_id'], r['referred_id'])
+                    if member.status in ['member', 'administrator', 'creator']:
+                        # Начисляем
+                        async with db_pool.acquire() as conn:
+                            async with conn.transaction():
+                                await conn.execute("UPDATE referrals SET status = 'completed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
+                                await conn.execute('''
+                                    INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, 10)
+                                    ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + 10
+                                ''', r['chat_id'], r['referrer_id'])
+                                await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, 10, 'referral')", r['chat_id'], r['referrer_id'])
+                                print(f"💰 [РЕФ] {r['referrer_id']} получил +10 за {r['referred_id']}.")
+                    else:
+                        # Ливнул
+                        async with db_pool.acquire() as conn:
+                            await conn.execute("UPDATE referrals SET status = 'failed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
+                except Exception as e:
+                    print(f"⚠️ Ошибка проверки рефа {r['referred_id']}: {e}")
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("UPDATE referrals SET status = 'failed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
+                
+                await asyncio.sleep(0.5) # Защита от лимитов Telegram
+        except Exception as e:
+            print(f"❌ Ошибка фонового цикла: {e}")
+
+
+# ================== API ДЛЯ MINI APP ==================
 def validate_init_data(init_data: str) -> dict | None:
     try:
         parsed_data = dict(parse_qsl(init_data))
@@ -489,6 +598,7 @@ async def api_balance(request):
     user_data = validate_init_data(init_data)
     if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
     user_id = user_data.get("id")
+    
     async with db_pool.acquire() as conn:
         total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
         rows = await conn.fetch('''
@@ -496,10 +606,21 @@ async def api_balance(request):
             FROM balances b LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
             WHERE b.user_id = $1 AND b.balance != 0 ORDER BY b.balance DESC
         ''', user_id)
+        
+        # Список чатов для рефок
+        my_chats = await conn.fetch('''
+            SELECT DISTINCT m.chat_id, m.title, m.chat_type 
+            FROM managed_chats m
+            LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
+            LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
+            WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL
+        ''', user_id)
+        
     return web.json_response({
         "user_id": user_id,
         "total_balance": total,
-        "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows]
+        "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows],
+        "my_chats": [{"chat_id": r["chat_id"], "title": r["title"], "chat_type": r["chat_type"]} for r in my_chats]
     })
 
 
@@ -509,30 +630,72 @@ async def api_top(request):
     if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('''
-            SELECT b.user_id, SUM(b.balance) as total, u.first_name, u.username
+            SELECT b.user_id, SUM(b.balance) as total, u.first_name
             FROM balances b JOIN users u ON u.user_id = b.user_id
-            GROUP BY b.user_id, u.first_name, u.username
-            ORDER BY total DESC LIMIT 5
+            GROUP BY b.user_id, u.first_name ORDER BY total DESC LIMIT 5
         ''')
-    top_list = [{"user_id": r["user_id"], "balance": r["total"], "first_name": r["first_name"] or "Аноним", "username": r["username"]} for r in rows]
-    return web.json_response({"top": top_list})
+    return web.json_response({"top": [{"user_id": r["user_id"], "balance": r["total"], "first_name": r["first_name"] or "Аноним"} for r in rows]})
+
+
+async def api_history(request):
+    init_data = request.query.get("initData")
+    if not init_data: return web.json_response({"error": "No initData"}, status=401)
+    user_data = validate_init_data(init_data)
+    if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+    user_id = user_data.get("id")
+    chat_id = request.query.get("chat_id")
+    
+    async with db_pool.acquire() as conn:
+        if chat_id:
+            # Если выбран конкретный чат
+            chat_id = int(chat_id)
+            # Проверка: админ ли он этого чата?
+            is_admin = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+            
+            if is_admin:
+                # Админ видит ВСЁ по чату
+                rows = await conn.fetch('''
+                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
+                           u1.first_name as sender_name, u2.first_name as receiver_name
+                    FROM transactions t
+                    LEFT JOIN users u1 ON u1.user_id = t.sender_id
+                    LEFT JOIN users u2 ON u2.user_id = t.receiver_id
+                    WHERE t.chat_id = $1 ORDER BY t.created_at DESC LIMIT 50
+                ''', chat_id)
+            else:
+                # Юзер видит только СВОИ
+                rows = await conn.fetch('''
+                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
+                           u1.first_name as sender_name, u2.first_name as receiver_name
+                    FROM transactions t
+                    LEFT JOIN users u1 ON u1.user_id = t.sender_id
+                    LEFT JOIN users u2 ON u2.user_id = t.receiver_id
+                    WHERE t.chat_id = $1 AND (t.sender_id = $2 OR t.receiver_id = $2) ORDER BY t.created_at DESC LIMIT 50
+                ''', chat_id, user_id)
+        else:
+            # Общая история юзера
+            rows = await conn.fetch('''
+                SELECT t.id, t.chat_id, t.amount, t.type, t.created_at, m.title as chat_title
+                FROM transactions t LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
+                WHERE t.receiver_id = $1 ORDER BY t.created_at DESC LIMIT 50
+            ''', user_id)
+            
+    return web.json_response({"history": [dict(r) for r in rows]})
 
 
 async def handle_ping(request):
     return web.Response(text="Bot is alive")
 
-# Явная отдача index.html при заходе на /webapp/ или /webapp
 async def serve_index(request):
     file_path = os.path.join(os.path.dirname(__file__), 'webapp', 'index.html')
     return web.FileResponse(file_path)
-
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
-    
+    app.router.add_get('/api/history', api_history)
     app.router.add_get('/webapp', serve_index)
     app.router.add_get('/webapp/', serve_index)
     app.router.add_static('/webapp/', path=os.path.join(os.path.dirname(__file__), 'webapp'), name='webapp_static')
@@ -549,13 +712,18 @@ async def main():
     global bot
     if not BOT_TOKEN: raise RuntimeError("❌ BOT_TOKEN не задан!")
     if not DATABASE_URL: raise RuntimeError("❌ DATABASE_URL не задан!")
+    
     await init_db()
     await start_web_server()
+    
     bot = Bot(token=BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запускаем фоновую проверку рефералов
+    asyncio.create_task(check_referrals_loop())
+    
     print("✅ Бот запущен.")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
 
 if __name__ == "__main__":
     asyncio.run(main())
