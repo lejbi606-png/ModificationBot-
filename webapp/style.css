@@ -6,117 +6,32 @@
     --secondary-bg: var(--tg-theme-secondary-bg-color, #2c2c2e);
 }
 
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { background-color: var(--bg-color); color: var(--text-color); padding: 16px; min-height: 100vh; }
+.container { max-width: 600px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+header h1 { font-size: 22px; font-weight: 600; }
 
-body {
-    background-color: var(--bg-color);
-    color: var(--text-color);
-    padding: 16px;
-    min-height: 100vh;
-}
+.nav-tabs { display: flex; background: var(--secondary-bg); border-radius: 12px; padding: 4px; margin-bottom: 10px; }
+.tab-btn { flex: 1; background: transparent; border: none; color: var(--hint-color); padding: 10px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+.tab-btn.active { background: var(--bg-color); color: var(--text-color); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+.tab-content { display: none; flex-direction: column; gap: 20px; }
+.tab-content.active { display: flex; }
 
-.container {
-    max-width: 600px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
+.total-balance-card { background: linear-gradient(135deg, var(--button-color), #1e88e5); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; align-items: center; color: white; box-shadow: 0 8px 24px rgba(0,0,0,0.15); }
+.total-balance-card .label { font-size: 14px; opacity: 0.8; margin-bottom: 8px; }
+.total-balance-card .value { font-size: 48px; font-weight: 700; line-height: 1; }
+.total-balance-card .currency { font-size: 16px; margin-top: 8px; opacity: 0.9; }
 
-header h1 {
-    font-size: 22px;
-    font-weight: 600;
-}
+h2 { font-size: 16px; color: var(--hint-color); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.list-item { background-color: var(--secondary-bg); padding: 16px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; }
+.list-item .title { font-weight: 500; font-size: 16px; }
+.list-item .amount { font-weight: 700; font-size: 18px; color: var(--button-color); }
+.list-item .amount.negative { color: #ff4a4a; }
+.list-item .amount.positive { color: #4cd964; }
 
-.total-balance-card {
-    background: linear-gradient(135deg, var(--button-color), #1e88e5);
-    border-radius: 16px;
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    color: white;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-}
+.history-controls select { width: 100%; padding: 12px; border-radius: 12px; background: var(--secondary-bg); color: var(--text-color); border: 1px solid var(--hint-color); font-size: 16px; outline: none; }
 
-.total-balance-card .label {
-    font-size: 14px;
-    opacity: 0.8;
-    margin-bottom: 8px;
-}
-
-.total-balance-card .value {
-    font-size: 48px;
-    font-weight: 700;
-    line-height: 1;
-}
-
-.total-balance-card .currency {
-    font-size: 16px;
-    margin-top: 8px;
-    opacity: 0.9;
-}
-
-h2 {
-    font-size: 16px;
-    color: var(--hint-color);
-    margin-bottom: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.list-item {
-    background-color: var(--secondary-bg);
-    padding: 16px;
-    border-radius: 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.list-item .title {
-    font-weight: 500;
-    font-size: 16px;
-}
-
-.list-item .amount {
-    font-weight: 700;
-    font-size: 18px;
-    color: var(--button-color);
-}
-
-.rank {
-    width: 24px;
-    height: 24px;
-    background-color: var(--bg-color);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    font-size: 12px;
-    margin-right: 12px;
-}
-
-.top-left {
-    display: flex;
-    align-items: center;
-}
-
-.loading {
-    color: var(--hint-color);
-    text-align: center;
-    padding: 20px;
-    font-size: 14px;
-}
+.rank { width: 24px; height: 24px; background-color: var(--bg-color); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; margin-right: 12px; }
+.top-left { display: flex; align-items: center; }
+.loading { color: var(--hint-color); text-align: center; padding: 20px; font-size: 14px; }
