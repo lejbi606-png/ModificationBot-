@@ -24,13 +24,11 @@ db_pool = None
 bot = None
 dp = Dispatcher()
 
-# Динамическая клавиатура
+
 def get_main_kb(is_private: bool) -> ReplyKeyboardMarkup:
     if is_private:
-        # В личке у всех две кнопки
         buttons = [[KeyboardButton(text="💰 Баланс"), KeyboardButton(text="🗑 Сбросить прогресс")]]
     else:
-        # В группах только баланс
         buttons = [[KeyboardButton(text="💰 Баланс")]]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
@@ -42,10 +40,22 @@ async def init_db():
         try:
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
+                
+                # ---- Миграция: убираем старую колонку balance, если она есть ----
+                has_old_balance = await conn.fetchval('''
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'users' AND column_name = 'balance'
+                    )
+                ''')
+                if has_old_balance:
+                    print("🔄 Миграция: убираем общий balance из users...")
+                    await conn.execute('ALTER TABLE users DROP COLUMN balance')
+
+                # ---- Базовые таблицы ----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
-                        balance INTEGER DEFAULT 0,
                         first_name TEXT,
                         username TEXT
                     );
@@ -95,8 +105,16 @@ async def init_db():
                     );
                 ''')
                 
-                await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;')
-                await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;')
+                # ---- Балансы по чатам ----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS balances (
+                        chat_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        balance INTEGER DEFAULT 0,
+                        PRIMARY KEY (chat_id, user_id)
+                    );
+                ''')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_balances_user ON balances(user_id)')
                 
             print("✅ База данных готова.")
             return
@@ -118,12 +136,10 @@ async def track_chat_owner(update: ChatMemberUpdated):
                 if admin.status == "creator":
                     owner_id = admin.user.id
                     break
-            
             if not owner_id:
                 return
 
             linked_id = getattr(chat, 'linked_chat_id', None)
-
             async with db_pool.acquire() as conn:
                 await conn.execute('INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING', owner_id)
                 await conn.execute('''
@@ -131,7 +147,6 @@ async def track_chat_owner(update: ChatMemberUpdated):
                     VALUES ($1, $2, $3, $4, $5)
                     ON CONFLICT (chat_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, title = EXCLUDED.title, chat_type = EXCLUDED.chat_type, linked_chat_id = EXCLUDED.linked_chat_id
                 ''', chat.id, owner_id, chat.title, chat.type, linked_id)
-            
             print(f"👑 [ВЛАДЕЛЕЦ] {chat.title}. Владелец {owner_id}.")
         except Exception as e:
             print(f"❌ Не удалось получить владельца {chat.id}: {e}")
@@ -142,53 +157,61 @@ async def cmd_start(message: Message):
     if message.chat.type == "private":
         text = (
             "👋 Привет! Я бот для начисления баллов в чате и на канале.\n\n"
-            "💬 <b>Как заработать баллы в ЧАТЕ:</b>\n"
-            "1. Ты пишешь сообщение в наш чат.\n"
-            "2. Другие участники ставят на него реакции.\n"
-            "3. За каждую новую реакцию автор сообщения получает 1 балл.\n"
-            "💎 <b>Premium:</b> может поставить до 3 разных реакций на одно сообщение (автор получит 3 балла).\n\n"
-            "📢 <b>Как заработать баллы в КАНАЛЕ:</b>\n"
-            "1. Под каждым постом есть кнопка «🔥 Заработать балл».\n"
-            "2. Жмешь на неё и получаешь 1 балл. (Лимит — 1 нажатие на пост).\n\n"
-            "⚠️ <b>ПРАВИЛА И ШТРАФЫ (Античит):</b>\n"
-            "Накручивать баллы запрещено. Бот строго следит за этим.\n\n"
-            "<b>В канале (для всех):</b>\n"
-            "• <b>1-е нажатие:</b> +1 балл.\n"
-            "• <b>2-е нажатие:</b> Предупреждение, баллы НЕ начисляются.\n"
-            "• <b>3-е нажатие:</b> Штраф -5 баллов (баланс уходит в минус).\n\n"
-            "<b>В чате (для обычных):</b>\n"
-            "• <b>1-я реакция:</b> +1 балл.\n"
-            "• <b>2-я реакция</b> (свап): Предупреждение, баллы НЕ начисляются.\n"
-            "• <b>3-я реакция:</b> Штраф -5 баллов.\n\n"
-            "<b>В чате (для Premium, лимит 3 реакции):</b>\n"
-            "• 1, 2, 3-я реакции: +1 балл за каждую.\n"
-            "• <b>4-я реакция:</b> Предупреждение.\n"
-            "• <b>5-я реакция:</b> Штраф -5 баллов.\n\n"
-            "👇 Свой баланс можно проверить в личке по кнопке ниже, либо командой /balance в чате."
+            "💬 <b>В ЧАТЕ:</b> другие ставят реакции на твои сообщения — баллы тебе (в этом чате).\n"
+            "📢 <b>В КАНАЛЕ:</b> жми кнопку «👀 Забрать баллы» под постом (1 нажатие на пост).\n"
+            "💎 <b>Premium:</b> в чате можно поставить до 3 реакций на одно сообщение.\n\n"
+            "⚠️ <b>Античит:</b> за накрутку сначала предупреждение, потом штраф -5 баллов.\n\n"
+            "💰 <b>Балансы теперь раздельные по чатам.</b> Жми «Баланс» — увидишь сколько у тебя в каждом."
         )
         await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
     else:
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
+# ================== БАЛАНС ==================
 @dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}), F.chat.type != "channel")
 async def cmd_balance(message: Message):
     if not message.from_user: return
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance FROM users WHERE user_id = $1', message.from_user.id)
-    if row:
-        await message.answer(f"💰 {message.from_user.first_name}, твой баланс: {row['balance']} баллов.")
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if message.chat.type == "private":
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT b.chat_id, b.balance, m.title, m.chat_type
+                FROM balances b
+                LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
+                WHERE b.user_id = $1 AND b.balance != 0
+                ORDER BY b.balance DESC
+            ''', user_id)
+        
+        if not rows:
+            await message.answer("💰 У тебя пока нет баллов ни в одном чате.")
+            return
+        
+        lines = ["💰 <b>Твои балансы:</b>\n"]
+        for r in rows:
+            title = r['title'] or f"Чат {r['chat_id']}"
+            icon = "📢" if r['chat_type'] == "channel" else "💬"
+            lines.append(f"{icon} {title}: <b>{r['balance']}</b> баллов")
+        
+        await message.answer("\n".join(lines), parse_mode="HTML")
     else:
-        await message.answer("💰 У тебя пока 0 баллов.")
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2',
+                chat_id, user_id
+            )
+        balance = row['balance'] if row else 0
+        await message.answer(f"💰 {message.from_user.first_name}, твой баланс в этом чате: {balance} баллов.")
 
 
-# ================== МЕНЮ СБРОСА В ЛИЧКЕ ==================
+# ================== СБРОС ==================
 @dp.message(F.text == "🗑 Сбросить прогресс", F.chat.type == "private")
 async def cmd_reset_menu(message: Message):
     user_id = message.from_user.id
     
     async with db_pool.acquire() as conn:
-        # Показываем ТОЛЬКО те чаты, где этот юзер - owner_id. (Глобальные админы из ENV видят всё)
         if user_id in ADMIN_IDS:
             rows = await conn.fetch('SELECT chat_id, title, chat_type, linked_chat_id FROM managed_chats')
         else:
@@ -214,7 +237,7 @@ async def cmd_reset_menu(message: Message):
         if linked_id: shown.add(linked_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Выбери чат для сброса:", reply_markup=kb)
+    await message.answer("Выбери чат для сброса (удалятся ВСЕ данные этого чата):", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("resetchat_"))
@@ -228,26 +251,30 @@ async def handle_reset_chat(callback: CallbackQuery):
         return
 
     async with db_pool.acquire() as conn:
-        owner_row = await conn.fetchrow('SELECT owner_id FROM managed_chats WHERE chat_id = $1', chat_id)
+        owner_row = await conn.fetchrow('SELECT owner_id, title FROM managed_chats WHERE chat_id = $1', chat_id)
         if not owner_row:
             await callback.answer("Чат не найден", show_alert=True)
             return
-            
-        # Жесткая проверка прав перед удалением
         if callback.from_user.id not in ADMIN_IDS and owner_row['owner_id'] != callback.from_user.id:
-            await callback.answer("⛔ Нет прав на сброс этого чата.", show_alert=True)
+            await callback.answer("⛔ Нет прав.", show_alert=True)
             return
 
-        await conn.execute('DELETE FROM messages WHERE chat_id = $1', chat_id)
-        await conn.execute('DELETE FROM reactions WHERE chat_id = $1', chat_id)
-        await conn.execute('DELETE FROM channel_rewards WHERE chat_id = $1', chat_id)
+        chat_ids = [chat_id]
         if linked_id:
-            await conn.execute('DELETE FROM messages WHERE chat_id = $1', linked_id)
-            await conn.execute('DELETE FROM reactions WHERE chat_id = $1', linked_id)
-            await conn.execute('DELETE FROM channel_rewards WHERE chat_id = $1', linked_id)
+            chat_ids.append(linked_id)
+        
+        for cid in chat_ids:
+            await conn.execute('DELETE FROM messages WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM reactions WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM channel_rewards WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM balances WHERE chat_id = $1', cid)
 
-    await callback.answer("✅ Данные сброшены!", show_alert=True)
-    await callback.message.edit_text(f"🗑 Данные удалены.")
+    await callback.answer("✅ Все данные чата сброшены!", show_alert=True)
+    title = owner_row['title'] or chat_id
+    try:
+        await callback.message.edit_text(f"🗑 Все данные для «{title}» удалены.\n(Балансы всех юзеров, реакции и сообщения обнулены)")
+    except Exception:
+        pass
 
 
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
@@ -263,7 +290,7 @@ async def save_msg(message: Message):
         ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
 
-# ================== НОВЫЙ ПОСТ В КАНАЛЕ ==================
+# ================== ПОСТ В КАНАЛЕ ==================
 @dp.channel_post()
 async def handle_channel_post(message: Message):
     if message.chat.type != "channel": return
@@ -273,9 +300,14 @@ async def handle_channel_post(message: Message):
             await conn.execute('''
                 INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
             ''', message.chat.id, message.message_id, message.from_user.id)
+            await conn.execute('''
+                INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
+                ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
+            ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
+    # Текст кнопки обновлен
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥 Заработать балл", callback_data=f"earn_{message.message_id}")]
+        [InlineKeyboardButton(text="👀 Забрать баллы", callback_data=f"earn_{message.message_id}")]
     ])
     try:
         await message.edit_reply_markup(reply_markup=kb)
@@ -283,7 +315,7 @@ async def handle_channel_post(message: Message):
         print(f"❌ [КАНАЛ] Не удалось добавить кнопку: {e}")
 
 
-# ================== НАЖАТИЕ КНОПКИ В КАНАЛЕ ==================
+# ================== КНОПКА В КАНАЛЕ ==================
 @dp.callback_query(F.data.startswith("earn_"))
 async def handle_earn_button(callback: CallbackQuery):
     if not callback.message:
@@ -293,7 +325,7 @@ async def handle_earn_button(callback: CallbackQuery):
     user = callback.from_user
     channel_id = callback.message.chat.id
     msg_id = int(callback.data.split("_", 1)[1])
-    limit = 1  # В каналах у всех лимит 1
+    limit = 1
     
     try:
         async with db_pool.acquire() as conn:
@@ -307,12 +339,11 @@ async def handle_earn_button(callback: CallbackQuery):
 
             async with conn.transaction():
                 row = await conn.fetchrow('''
-                    SELECT click_count, max_rewarded FROM channel_rewards 
+                    SELECT click_count FROM channel_rewards 
                     WHERE chat_id = $1 AND message_id = $2 AND user_id = $3
                 ''', channel_id, msg_id, user.id)
                 
                 reward_given = False
-                new_count = 0
 
                 if not row:
                     await conn.execute('''
@@ -320,10 +351,8 @@ async def handle_earn_button(callback: CallbackQuery):
                         VALUES ($1, $2, $3, 1, 1)
                     ''', channel_id, msg_id, user.id)
                     reward_given = True
-                    new_count = 1
                 else:
                     click_count = row['click_count'] + 1
-                    new_count = click_count
                     if click_count <= limit:
                         await conn.execute('''
                             UPDATE channel_rewards SET click_count = $1, max_rewarded = max_rewarded + 1
@@ -338,28 +367,33 @@ async def handle_earn_button(callback: CallbackQuery):
                         
                         if click_count == limit + 1:
                             await callback.answer("⚠️ Лимит исчерпан. Баллы не начислены.", show_alert=True)
-                            return
                         else:
-                            await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', user.id)
+                            await conn.execute('''
+                                INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
+                                ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
+                            ''', channel_id, user.id)
                             await callback.answer("❌ Штраф -5 баллов за накрутку!", show_alert=True)
-                            return
+                        return
 
                 if reward_given:
                     await conn.execute('''
                         INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                         ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
                     ''', user.id, user.first_name, user.username)
-                    await conn.execute('UPDATE users SET balance = balance + 1 WHERE user_id = $1', user.id)
+                    await conn.execute('''
+                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, 1)
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + 1
+                    ''', channel_id, user.id)
                     
-                    await callback.answer(f"✅ +1 балл! (1/1)")
-                    print(f"✅ [КАНАЛ] {user.first_name} нажал кнопку. +1 балл.")
+                    await callback.answer("✅ +1 балл!")
+                    print(f"✅ [КАНАЛ {channel_id}] {user.first_name} забрал балл. +1.")
 
     except Exception as e:
         print(f"❌ [КАНАЛ] Ошибка: {e}")
         await callback.answer("Ошибка сервера", show_alert=True)
 
 
-# ================== РЕАКЦИИ (чаты, с логикой Премиума) ==================
+# ================== РЕАКЦИИ В ЧАТАХ ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
     user = reaction.user
@@ -386,10 +420,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 await conn.execute('''
                     INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                     ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
-                ''', target_user_id, user.first_name, user.username)
-                await conn.execute('''
-                    INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
-                    ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
                 ''', user.id, user.first_name, user.username)
 
                 row = await conn.fetchrow('''
@@ -404,7 +434,10 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         INSERT INTO reactions (chat_id, user_id, message_id, max_rewarded, rewarded_emojis, toggles)
                         VALUES ($1, $2, $3, $4, $5, 0)
                     ''', chat_id, user.id, msg_id, reward, list(new))
-                    await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', reward, target_user_id)
+                    await conn.execute('''
+                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
+                    ''', chat_id, target_user_id, reward)
                     return
 
                 max_rewarded = row['max_rewarded'] or 0
@@ -429,14 +462,21 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 ''', max_rewarded, list(rewarded_emojis), new_toggles, row['id'])
 
                 if total_reward > 0:
-                    await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', total_reward, target_user_id)
+                    await conn.execute('''
+                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
+                    ''', chat_id, target_user_id, total_reward)
 
                 if new_manipulations > 0 and new_toggles > 1:
-                    await conn.execute('UPDATE users SET balance = balance - 5 WHERE user_id = $1', user.id)
+                    await conn.execute('''
+                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
+                    ''', chat_id, user.id)
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
 
+# ================== ВАЛИДАЦИЯ MINI APP ==================
 def validate_init_data(init_data: str) -> dict | None:
     try:
         parsed_data = dict(parse_qsl(init_data))
@@ -457,9 +497,19 @@ async def api_balance(request):
     if not init_data: return web.json_response({"error": "No initData"}, status=401)
     user_data = validate_init_data(init_data)
     if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+    user_id = user_data.get("id")
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance FROM users WHERE user_id = $1', user_data.get("id"))
-    return web.json_response({"balance": row['balance'] if row else 0, "user_id": user_data.get("id")})
+        total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
+        rows = await conn.fetch('''
+            SELECT b.chat_id, b.balance, m.title, m.chat_type
+            FROM balances b LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
+            WHERE b.user_id = $1 AND b.balance != 0 ORDER BY b.balance DESC
+        ''', user_id)
+    return web.json_response({
+        "user_id": user_id,
+        "total_balance": total,
+        "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows]
+    })
 
 
 async def api_top(request):
@@ -467,8 +517,13 @@ async def api_top(request):
     if not init_data: return web.json_response({"error": "No initData"}, status=401)
     if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch('SELECT user_id, balance, first_name, username FROM users ORDER BY balance DESC LIMIT 5')
-    top_list = [{"user_id": r["user_id"], "balance": r["balance"], "first_name": r["first_name"] or "Аноним", "username": r["username"]} for r in rows]
+        rows = await conn.fetch('''
+            SELECT b.user_id, SUM(b.balance) as total, u.first_name, u.username
+            FROM balances b JOIN users u ON u.user_id = b.user_id
+            GROUP BY b.user_id, u.first_name, u.username
+            ORDER BY total DESC LIMIT 5
+        ''')
+    top_list = [{"user_id": r["user_id"], "balance": r["total"], "first_name": r["first_name"] or "Аноним", "username": r["username"]} for r in rows]
     return web.json_response({"top": top_list})
 
 
