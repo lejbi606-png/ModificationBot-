@@ -60,9 +60,13 @@ async def init_db():
                         chat_id BIGINT,
                         message_id BIGINT,
                         author_id BIGINT,
+                        text TEXT,
                         PRIMARY KEY (chat_id, message_id)
                     );
                 ''')
+                # Миграция для messages
+                await conn.execute('ALTER TABLE messages ADD COLUMN IF NOT EXISTS text TEXT')
+                
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS reactions (
                         id SERIAL PRIMARY KEY,
@@ -122,9 +126,13 @@ async def init_db():
                         receiver_id BIGINT NOT NULL,
                         amount INTEGER NOT NULL,
                         type TEXT NOT NULL,
+                        message_text TEXT,
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
+                # Миграция для transactions
+                await conn.execute('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS message_text TEXT')
+                
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
                 await conn.execute('''
@@ -384,8 +392,13 @@ async def handle_reset_chat(callback: CallbackQuery):
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def save_msg(message: Message):
     if not message.from_user or message.from_user.is_bot: return
+    msg_text = message.text or message.caption or ""
     async with db_pool.acquire() as conn:
-        await conn.execute('INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', message.chat.id, message.message_id, message.from_user.id)
+        await conn.execute('''
+            INSERT INTO messages (chat_id, message_id, author_id, text) 
+            VALUES ($1, $2, $3, $4) 
+            ON CONFLICT (chat_id, message_id) DO UPDATE SET text = EXCLUDED.text
+        ''', message.chat.id, message.message_id, message.from_user.id, msg_text)
         await conn.execute('''
             INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
             ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
@@ -396,8 +409,13 @@ async def save_msg(message: Message):
 async def handle_channel_post(message: Message):
     if message.chat.type != "channel": return
     if message.from_user and not message.from_user.is_bot:
+        msg_text = message.text or message.caption or ""
         async with db_pool.acquire() as conn:
-            await conn.execute('INSERT INTO messages (chat_id, message_id, author_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', message.chat.id, message.message_id, message.from_user.id)
+            await conn.execute('''
+                INSERT INTO messages (chat_id, message_id, author_id, text) 
+                VALUES ($1, $2, $3, $4) 
+                ON CONFLICT (chat_id, message_id) DO UPDATE SET text = EXCLUDED.text
+            ''', message.chat.id, message.message_id, message.from_user.id, msg_text)
             await conn.execute('''
                 INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
@@ -419,7 +437,9 @@ async def handle_earn_button(callback: CallbackQuery):
     
     try:
         async with db_pool.acquire() as conn:
-            author_row = await conn.fetchrow('SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2', channel_id, msg_id)
+            author_row = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', channel_id, msg_id)
+            msg_text = author_row['text'] if author_row else ""
+            
             if author_row and author_row['author_id'] == user.id:
                 await callback.answer("❌ Вы не можете зарабатывать баллы на своих постах!", show_alert=True)
                 return
@@ -445,7 +465,7 @@ async def handle_earn_button(callback: CallbackQuery):
                                 INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
                                 ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
                             ''', channel_id, user.id)
-                            await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, -5, 'fine')", channel_id, user.id)
+                            await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, -5, 'fine', $3)", channel_id, user.id, msg_text)
                             await callback.answer("❌ Штраф -5 баллов за накрутку!", show_alert=True)
                         return
 
@@ -458,7 +478,7 @@ async def handle_earn_button(callback: CallbackQuery):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, 1)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + 1
                     ''', channel_id, user.id)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, 1, 'channel_earn')", channel_id, user.id)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, 1, 'channel_earn', $3)", channel_id, user.id, msg_text)
                     await callback.answer("✅ +1 балл!")
     except Exception as e:
         print(f"❌ [КАНАЛ] Ошибка: {e}")
@@ -481,9 +501,11 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         if reaction.chat.type == "channel": return
         
         async with db_pool.acquire() as conn:
-            msg = await conn.fetchrow('SELECT author_id FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
+            msg = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
             if not msg: return
             target_user_id = msg['author_id']
+            msg_text = msg['text'] or ""
+            
             if target_user_id == user.id: return
             
             is_mod = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user.id)
@@ -512,7 +534,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
                     ''', chat_id, target_user_id, reward)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'reaction_earn')", chat_id, user.id, target_user_id, reward)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $3, $4, 'reaction_earn', $5)", chat_id, user.id, target_user_id, reward, msg_text)
                     return
 
                 max_rewarded = row['max_rewarded'] or 0
@@ -539,7 +561,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
                     ''', chat_id, target_user_id, final_reward)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'reaction_earn')", chat_id, user.id, target_user_id, final_reward)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $3, $4, 'reaction_earn', $5)", chat_id, user.id, target_user_id, final_reward, msg_text)
 
                 if new_manipulations > 0 and new_toggles > 1:
                     fine = 5 * multiplier
@@ -547,7 +569,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - $3
                     ''', chat_id, user.id, fine)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'fine')", chat_id, user.id, -fine)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, $3, 'fine', $4)", chat_id, user.id, -fine, msg_text)
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
@@ -659,7 +681,7 @@ async def api_history(request):
             
             if is_admin:
                 rows = await conn.fetch('''
-                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
+                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.message_text, t.created_at, 
                            u1.first_name as sender_name, u2.first_name as receiver_name,
                            m.title as chat_title
                     FROM transactions t
@@ -670,7 +692,7 @@ async def api_history(request):
                 ''', chat_id)
             else:
                 rows = await conn.fetch('''
-                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
+                    SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.message_text, t.created_at, 
                            u1.first_name as sender_name, u2.first_name as receiver_name,
                            m.title as chat_title
                     FROM transactions t
@@ -681,7 +703,7 @@ async def api_history(request):
                 ''', chat_id, user_id)
         else:
             rows = await conn.fetch('''
-                SELECT t.id, t.chat_id, t.amount, t.type, t.created_at, 
+                SELECT t.id, t.chat_id, t.amount, t.type, t.message_text, t.created_at, 
                        u1.first_name as sender_name, u2.first_name as receiver_name,
                        m.title as chat_title
                 FROM transactions t 
