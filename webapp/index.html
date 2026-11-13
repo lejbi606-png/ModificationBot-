@@ -13,25 +13,54 @@
             <h1 id="greeting">Привет!</h1>
         </header>
 
-        <div class="total-balance-card">
-            <span class="label">Общий баланс</span>
-            <span class="value" id="total-balance">0</span>
-            <span class="currency">баллов</span>
+        <div class="nav-tabs">
+            <button class="tab-btn active" onclick="switchTab('balance')">Баланс</button>
+            <button class="tab-btn" onclick="switchTab('history')">История</button>
         </div>
 
-        <section class="balances-section">
-            <h2>Где ты заработал</h2>
-            <div id="balances-list" class="list">
-                <div class="loading">Загрузка...</div>
+        <!-- Вкладка БАЛАНС -->
+        <div id="tab-balance" class="tab-content active">
+            <div class="total-balance-card">
+                <span class="label">Общий баланс</span>
+                <span class="value" id="total-balance">0</span>
+                <span class="currency">баллов</span>
             </div>
-        </section>
 
-        <section class="top-section">
-            <h2>🏆 Топ-5</h2>
-            <div id="top-list" class="list">
-                <div class="loading">Загрузка...</div>
-            </div>
-        </section>
+            <section class="balances-section">
+                <h2>Где ты заработал</h2>
+                <div id="balances-list" class="list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </section>
+
+            <section class="ref-section">
+                <h2>🔗 Пригласи друга</h2>
+                <div id="ref-list" class="list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </section>
+
+            <section class="top-section">
+                <h2>🏆 Топ-5</h2>
+                <div id="top-list" class="list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Вкладка ИСТОРИЯ -->
+        <div id="tab-history" class="tab-content">
+            <section class="history-section">
+                <div class="history-controls">
+                    <select id="history-chat-select" onchange="loadHistory()">
+                        <option value="">Моя общая история</option>
+                    </select>
+                </div>
+                <div id="history-list" class="list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </section>
+        </div>
     </div>
     <script src="app.js"></script>
 </body>
