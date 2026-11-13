@@ -12,7 +12,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, MessageReactionUpdated, ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatMemberUpdated,
+    CommandObject
 )
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -64,7 +65,6 @@ async def init_db():
                         PRIMARY KEY (chat_id, message_id)
                     );
                 ''')
-                # Миграция для messages
                 await conn.execute('ALTER TABLE messages ADD COLUMN IF NOT EXISTS text TEXT')
                 
                 await conn.execute('''
@@ -130,7 +130,6 @@ async def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
-                # Миграция для transactions
                 await conn.execute('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS message_text TEXT')
                 
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
@@ -187,62 +186,11 @@ async def track_chat_owner(update: ChatMemberUpdated):
             print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
+# ================== ОБЫЧНЫЙ СТАРТ ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
-        ref_text = ""
-        if message.text and message.text.startswith("/start ref_"):
-            try:
-                parts = message.text.split()
-                if len(parts) > 1 and parts[1].startswith("ref_"):
-                    _, chat_id_str, referrer_id_str = parts[1].split("_")
-                    chat_id = int(chat_id_str)
-                    referrer_id = int(referrer_id_str)
-                    referred_id = message.from_user.id
-                    
-                    if referrer_id != referred_id:
-                        async with db_pool.acquire() as conn:
-                            chat_info = await conn.fetchrow('SELECT title FROM managed_chats WHERE chat_id = $1', chat_id)
-                            chat_title = chat_info['title'] if chat_info else "Неизвестный чат"
-                            
-                            exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
-                            if not exists:
-                                check_time = datetime.now() + timedelta(hours=1)
-                                await conn.execute('''
-                                    INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
-                                    VALUES ($1, $2, $3, 'pending', $4)
-                                ''', referrer_id, referred_id, chat_id, check_time)
-                                
-                                invite_link = "Не удалось получить ссылку."
-                                try:
-                                    try:
-                                        member = await bot.get_chat_member(chat_id, referred_id)
-                                        if member.status in ['member', 'administrator', 'creator']:
-                                            invite_link = "Ты уже состоишь в этом чате. Ожидай проверки через 1 час."
-                                        else:
-                                            raise Exception("Not in chat")
-                                    except Exception:
-                                        chat = await bot.get_chat(chat_id)
-                                        if chat.invite_link:
-                                            invite_link = chat.invite_link
-                                        elif chat.username:
-                                            invite_link = f"https://t.me/{chat.username}"
-                                        else:
-                                            inv = await bot.create_chat_invite_link(chat_id, member_limit=1)
-                                            invite_link = inv.invite_link
-                                except Exception as e:
-                                    print(f"Ошибка при получении ссылки на чат: {e}")
-                                    
-                                ref_text = (
-                                    f"👋 Привет! Тебя пригласили в чат <b>{chat_title}</b>.\n\n"
-                                    f"Чтобы пригласивший получил +10 баллов, тебе нужно зайти в чат и пробыть там 1 час.\n\n"
-                                    f"👇 Твоя ссылка:\n{invite_link}\n\n"
-                                )
-            except Exception as e:
-                print(f"❌ Ошибка парсинга рефки: {e}")
-
         text = (
-            ref_text + 
             "👋 Привет! Я бот для начисления баллов в чате и на канале.\n\n"
             "💬 <b>В ЧАТЕ:</b> другие ставят реакции на твои сообщения — баллы тебе.\n"
             "📢 <b>В КАНАЛЕ:</b> жми кнопку «👀 Забрать баллы» под постом.\n"
@@ -254,6 +202,87 @@ async def cmd_start(message: Message):
         await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
     else:
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
+
+
+# ================== ОБРАБОТКА РЕФЕРАЛЬНЫХ ССЫЛОК ==================
+@dp.message(CommandStart(deep_link=True))
+async def cmd_start_ref(message: Message, command: CommandObject):
+    if message.chat.type != "private":
+        return
+
+    args = command.args
+    print(f"🔗 [DEEP LINK] Получен аргумент: {args}")
+
+    if not args or not args.startswith("ref_"):
+        await cmd_start(message)
+        return
+
+    try:
+        parts = args.split("_")
+        if len(parts) != 3:
+            raise ValueError("Неверный формат ссылки")
+            
+        _, chat_id_str, referrer_id_str = parts
+        chat_id = int(chat_id_str)
+        referrer_id = int(referrer_id_str)
+        referred_id = message.from_user.id
+        
+        if referrer_id == referred_id:
+            await message.answer("❌ Ты не можешь пригласить самого себя.")
+            return
+
+        async with db_pool.acquire() as conn:
+            chat_info = await conn.fetchrow('SELECT title, chat_type FROM managed_chats WHERE chat_id = $1', chat_id)
+            
+            if not chat_info:
+                await message.answer(f"❌ Ошибка: Этот чат (ID {chat_id}) еще не добавлен в бота. Попроси владельца выдать боту админку.")
+                return
+                
+            chat_title = chat_info['title']
+            
+            exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
+            if exists:
+                await message.answer(f"Ты уже регистрировался по ссылке для чата «{chat_title}». Ожидай проверки.")
+                return
+
+            check_time = datetime.now() + timedelta(hours=1)
+            await conn.execute('''
+                INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
+                VALUES ($1, $2, $3, 'pending', $4)
+            ''', referrer_id, referred_id, chat_id, check_time)
+            
+            invite_link = None
+            try:
+                member = await bot.get_chat_member(chat_id, referred_id)
+                if member.status in ['member', 'administrator', 'creator']:
+                    invite_link = "Вы уже состоите в этом чате. Ожидайте начисления баллов через 1 час."
+                else:
+                    raise Exception("Not in chat")
+            except Exception:
+                try:
+                    chat = await bot.get_chat(chat_id)
+                    if chat.invite_link:
+                        invite_link = chat.invite_link
+                    elif chat.username:
+                        invite_link = f"https://t.me/{chat.username}"
+                    else:
+                        inv = await bot.create_chat_invite_link(chat_id, member_limit=1)
+                        invite_link = inv.invite_link
+                except Exception as e:
+                    print(f"❌ Ошибка при создании ссылки: {e}")
+                    invite_link = f"❌ Не удалось получить ссылку. Ошибка: {e}\n(Проверь, что бот админ в чате)."
+
+            text = (
+                f"👋 Привет! Тебя пригласили в <b>{chat_title}</b>.\n\n"
+                f"Чтобы пригласивший получил +10 баллов, тебе нужно зайти в чат (или уже быть в нем) и пробыть там 1 час.\n\n"
+                f"👇 Твоя ссылка/статус:\n{invite_link}\n\n"
+                f"После этого можешь пользоваться ботом."
+            )
+            await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
+            
+    except Exception as e:
+        print(f"❌ Ошибка парсинга рефки: {e}")
+        await message.answer(f"❌ Произошла ошибка при обработке ссылки: {e}")
 
 
 @dp.message(F.text == "🔗 Мои ссылки", F.chat.type == "private")
