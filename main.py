@@ -185,7 +185,6 @@ async def track_chat_owner(update: ChatMemberUpdated):
             print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
-# ================== ОБЫЧНЫЙ СТАРТ ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
@@ -203,15 +202,12 @@ async def cmd_start(message: Message):
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
-# ================== ОБРАБОТКА РЕФЕРАЛЬНЫХ ССЫЛОК ==================
 @dp.message(CommandStart(deep_link=True))
 async def cmd_start_ref(message: Message, command: CommandObject):
     if message.chat.type != "private":
         return
 
     args = command.args
-    print(f"🔗 [DEEP LINK] Получен аргумент: {args}")
-
     if not args or not args.startswith("ref_"):
         await cmd_start(message)
         return
@@ -219,7 +215,7 @@ async def cmd_start_ref(message: Message, command: CommandObject):
     try:
         parts = args.split("_")
         if len(parts) != 3:
-            raise ValueError("Неверный формат ссылки")
+            return await message.answer("❌ Неверный формат реферальной ссылки.")
             
         _, chat_id_str, referrer_id_str = parts
         chat_id = int(chat_id_str)
@@ -227,61 +223,50 @@ async def cmd_start_ref(message: Message, command: CommandObject):
         referred_id = message.from_user.id
         
         if referrer_id == referred_id:
-            await message.answer("❌ Ты не можешь пригласить самого себя.")
-            return
+            return await message.answer("❌ Вы не можете пригласить самого себя.")
 
         async with db_pool.acquire() as conn:
             chat_info = await conn.fetchrow('SELECT title, chat_type FROM managed_chats WHERE chat_id = $1', chat_id)
-            
             if not chat_info:
-                await message.answer(f"❌ Ошибка: Этот чат (ID {chat_id}) еще не добавлен в бота. Попроси владельца выдать боту админку.")
-                return
-                
-            chat_title = chat_info['title']
-            
+                return await message.answer(f"❌ Чат (ID {chat_id}) не найден в базе. Бот не видит этот чат. Добавь бота в чат и дай права админа.")
+
             exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
             if exists:
-                await message.answer(f"Ты уже регистрировался по ссылке для чата «{chat_title}». Ожидай проверки.")
-                return
+                return await message.answer(f"Вы уже регистрировались по ссылке для чата «{chat_info['title']}». Ожидайте проверки.")
 
             check_time = datetime.now() + timedelta(hours=1)
             await conn.execute('''
                 INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
                 VALUES ($1, $2, $3, 'pending', $4)
             ''', referrer_id, referred_id, chat_id, check_time)
-            
+
             invite_link = None
+            
+            # ПЫТАЕМСЯ ПОЛУЧИТЬ ССЫЛКУ ВСЕМИ СПОСОБАМИ
             try:
-                member = await bot.get_chat_member(chat_id, referred_id)
-                if member.status in ['member', 'administrator', 'creator']:
-                    invite_link = "Вы уже состоите в этом чате. Ожидайте начисления баллов через 1 час."
+                chat = await bot.get_chat(chat_id)
+                if chat.username:
+                    # Если чат публичный, ссылка самая простая
+                    invite_link = f"https://t.me/{chat.username}"
+                elif chat.invite_link:
+                    invite_link = chat.invite_link
                 else:
-                    raise Exception("Not in chat")
-            except Exception:
-                try:
-                    chat = await bot.get_chat(chat_id)
-                    if chat.invite_link:
-                        invite_link = chat.invite_link
-                    elif chat.username:
-                        invite_link = f"https://t.me/{chat.username}"
-                    else:
-                        inv = await bot.create_chat_invite_link(chat_id, member_limit=1)
-                        invite_link = inv.invite_link
-                except Exception as e:
-                    print(f"❌ Ошибка при создании ссылки: {e}")
-                    invite_link = f"❌ Не удалось получить ссылку. Ошибка: {e}\n(Проверь, что бот админ в чате)."
+                    # Генерируем новую
+                    inv = await bot.create_chat_invite_link(chat_id=chat_id, member_limit=1)
+                    invite_link = inv.invite_link
+            except Exception as e:
+                # Если упало, пишем причину прямо в бота
+                invite_link = f"❌ Ошибка при создании ссылки: {e}"
 
             text = (
-                f"👋 Привет! Тебя пригласили в <b>{chat_title}</b>.\n\n"
-                f"Чтобы пригласивший получил +10 баллов, тебе нужно зайти в чат (или уже быть в нем) и пробыть там 1 час.\n\n"
-                f"👇 Твоя ссылка/статус:\n{invite_link}\n\n"
-                f"После этого можешь пользоваться ботом."
+                f"👋 Привет! Тебя пригласили в чат: <b>{chat_info['title']}</b>.\n\n"
+                f"👇 Твоя персональная ссылка для входа:\n{invite_link}\n\n"
+                f"<i>Чтобы пригласивший получил +10 баллов, тебе нужно перейти по этой ссылке, зайти в чат и пробыть там 1 час.</i>"
             )
             await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
-            
+
     except Exception as e:
-        print(f"❌ Ошибка парсинга рефки: {e}")
-        await message.answer(f"❌ Произошла ошибка при обработке ссылки: {e}")
+        await message.answer(f"❌ Критическая ошибка: {e}")
 
 
 @dp.message(F.text == "🔗 Мои ссылки", F.chat.type == "private")
@@ -318,7 +303,7 @@ async def handle_getref(callback: CallbackQuery):
     text = (
         f"🔗 Твоя ссылка для приглашения:\n\n"
         f"<code>{link}</code>\n\n"
-        f"<i>Скопируй её и отправь другу. Когда он зайдет по ней и пробудет в чате 1 час, ты получишь +10 баллов!</i>"
+        f"<i>Скопируй её и отправь другу. Он нажмет, запустит бота, и бот выдаст ему ссылку на чат. Когда друг зайдет в чат и пробудет там 1 час, ты получишь +10 баллов!</i>"
     )
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
