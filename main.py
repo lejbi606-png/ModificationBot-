@@ -521,6 +521,11 @@ async def api_top(request):
 async def handle_ping(request):
     return web.Response(text="Bot is alive")
 
+# Явная отдача index.html при заходе на /webapp/ или /webapp
+async def serve_index(request):
+    file_path = os.path.join(os.path.dirname(__file__), 'webapp', 'index.html')
+    return web.FileResponse(file_path)
+
 
 async def start_web_server():
     app = web.Application()
@@ -528,6 +533,8 @@ async def start_web_server():
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
     
+    app.router.add_get('/webapp', serve_index)
+    app.router.add_get('/webapp/', serve_index)
     app.router.add_static('/webapp/', path=os.path.join(os.path.dirname(__file__), 'webapp'), name='webapp_static')
     
     runner = web.AppRunner(app)
