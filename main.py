@@ -133,6 +133,17 @@ async def init_db():
                 
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
+                
+                # НОВАЯ ТАБЛИЦА ДЛЯ РЕФЕРАЛЬНЫХ ССЫЛОК
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS referral_links (
+                        invite_link TEXT PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        referrer_id BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                ''')
+                
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS referrals (
                         referrer_id BIGINT NOT NULL,
@@ -185,6 +196,49 @@ async def track_chat_owner(update: ChatMemberUpdated):
             print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
+# ================== ГЛАВНЫЙ ОБРАБОТЧИК ВХОДА В ЧАТ (для рефералки) ==================
+@dp.chat_member()
+async def track_member_join(update: ChatMemberUpdated):
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
+    
+    # Пользователь вступил в чат
+    if old_status in ('left', 'kicked') and new_status in ('member', 'administrator', 'creator'):
+        if not update.invite_link:
+            return
+        
+        invite_url = update.invite_link.invite_link
+        new_user_id = update.new_chat_member.user.id
+        chat_id = update.chat.id
+        
+        async with db_pool.acquire() as conn:
+            link_row = await conn.fetchrow(
+                'SELECT referrer_id FROM referral_links WHERE invite_link = $1',
+                invite_url
+            )
+            if not link_row:
+                return
+            
+            referrer_id = link_row['referrer_id']
+            
+            if referrer_id == new_user_id:
+                return
+            
+            exists = await conn.fetchval(
+                'SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2',
+                new_user_id, chat_id
+            )
+            if exists:
+                return
+            
+            check_time = datetime.now() + timedelta(hours=1)
+            await conn.execute('''
+                INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
+                VALUES ($1, $2, $3, 'pending', $4)
+            ''', referrer_id, new_user_id, chat_id, check_time)
+            print(f"🤝 [РЕФ] Юзер {new_user_id} вступил в {chat_id} по ссылке от {referrer_id}. Проверка через 1ч.")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
@@ -200,73 +254,6 @@ async def cmd_start(message: Message):
         await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
     else:
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
-
-
-@dp.message(CommandStart(deep_link=True))
-async def cmd_start_ref(message: Message, command: CommandObject):
-    if message.chat.type != "private":
-        return
-
-    args = command.args
-    if not args or not args.startswith("ref_"):
-        await cmd_start(message)
-        return
-
-    try:
-        parts = args.split("_")
-        if len(parts) != 3:
-            return await message.answer("❌ Неверный формат реферальной ссылки.")
-            
-        _, chat_id_str, referrer_id_str = parts
-        chat_id = int(chat_id_str)
-        referrer_id = int(referrer_id_str)
-        referred_id = message.from_user.id
-        
-        if referrer_id == referred_id:
-            return await message.answer("❌ Вы не можете пригласить самого себя.")
-
-        async with db_pool.acquire() as conn:
-            chat_info = await conn.fetchrow('SELECT title, chat_type FROM managed_chats WHERE chat_id = $1', chat_id)
-            if not chat_info:
-                return await message.answer(f"❌ Чат (ID {chat_id}) не найден в базе. Бот не видит этот чат. Добавь бота в чат и дай права админа.")
-
-            exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
-            if exists:
-                return await message.answer(f"Вы уже регистрировались по ссылке для чата «{chat_info['title']}». Ожидайте проверки.")
-
-            check_time = datetime.now() + timedelta(hours=1)
-            await conn.execute('''
-                INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
-                VALUES ($1, $2, $3, 'pending', $4)
-            ''', referrer_id, referred_id, chat_id, check_time)
-
-            invite_link = None
-            
-            # ПЫТАЕМСЯ ПОЛУЧИТЬ ССЫЛКУ ВСЕМИ СПОСОБАМИ
-            try:
-                chat = await bot.get_chat(chat_id)
-                if chat.username:
-                    # Если чат публичный, ссылка самая простая
-                    invite_link = f"https://t.me/{chat.username}"
-                elif chat.invite_link:
-                    invite_link = chat.invite_link
-                else:
-                    # Генерируем новую
-                    inv = await bot.create_chat_invite_link(chat_id=chat_id, member_limit=1)
-                    invite_link = inv.invite_link
-            except Exception as e:
-                # Если упало, пишем причину прямо в бота
-                invite_link = f"❌ Ошибка при создании ссылки: {e}"
-
-            text = (
-                f"👋 Привет! Тебя пригласили в чат: <b>{chat_info['title']}</b>.\n\n"
-                f"👇 Твоя персональная ссылка для входа:\n{invite_link}\n\n"
-                f"<i>Чтобы пригласивший получил +10 баллов, тебе нужно перейти по этой ссылке, зайти в чат и пробыть там 1 час.</i>"
-            )
-            await message.answer(text, reply_markup=get_main_kb(is_private=True), parse_mode="HTML")
-
-    except Exception as e:
-        await message.answer(f"❌ Критическая ошибка: {e}")
 
 
 @dp.message(F.text == "🔗 Мои ссылки", F.chat.type == "private")
@@ -295,15 +282,41 @@ async def cmd_ref_menu(message: Message):
     await message.answer("Выбери чат, для которого хочешь получить реферальную ссылку:", reply_markup=kb)
 
 
+# ================== СОЗДАНИЕ ПРЯМОЙ ССЫЛКИ В ЧАТ ==================
 @dp.callback_query(F.data.startswith("getref_"))
 async def handle_getref(callback: CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
-    link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}_{callback.from_user.id}"
+    user = callback.from_user
+    
+    async with db_pool.acquire() as conn:
+        existing = await conn.fetchrow('''
+            SELECT invite_link FROM referral_links 
+            WHERE chat_id = $1 AND referrer_id = $2
+            ORDER BY created_at DESC LIMIT 1
+        ''', chat_id, user.id)
+        
+        if existing and existing['invite_link']:
+            link = existing['invite_link']
+        else:
+            try:
+                inv = await bot.create_chat_invite_link(
+                    chat_id=chat_id,
+                    name=f"От {user.first_name}",
+                    creates_join_request=False
+                )
+                link = inv.invite_link
+                await conn.execute('''
+                    INSERT INTO referral_links (invite_link, chat_id, referrer_id)
+                    VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+                ''', link, chat_id, user.id)
+            except Exception as e:
+                await callback.answer(f"❌ Не могу создать ссылку. Дай боту права 'Приглашать по ссылке' в чате. Ошибка: {e}", show_alert=True)
+                return
     
     text = (
-        f"🔗 Твоя ссылка для приглашения:\n\n"
+        f"🔗 <b>Твоя ссылка для приглашения:</b>\n\n"
         f"<code>{link}</code>\n\n"
-        f"<i>Скопируй её и отправь другу. Он нажмет, запустит бота, и бот выдаст ему ссылку на чат. Когда друг зайдет в чат и пробудет там 1 час, ты получишь +10 баллов!</i>"
+        f"<i>Скопируй её и отправь другу. Он перейдёт по ней и сразу попадёт в чат. Через 1 час, если он останется в чате, ты получишь +10 баллов.</i>"
     )
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
@@ -393,6 +406,7 @@ async def handle_reset_chat(callback: CallbackQuery):
             await conn.execute('DELETE FROM balances WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM transactions WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM referrals WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM referral_links WHERE chat_id = $1', cid)
 
     await callback.answer("✅ Все данные чата сброшены!", show_alert=True)
     title = owner_row['title'] or chat_id
