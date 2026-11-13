@@ -8,8 +8,13 @@ if (user) {
 
 async function fetchAPI(endpoint) {
     try {
+        if (!tg.initData) {
+            throw new Error('Нет initData');
+        }
         const response = await fetch(`/api/${endpoint}?initData=${encodeURIComponent(tg.initData)}`);
-        if (!response.ok) throw new Error('Network response was not ok');
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
         return await response.json();
     } catch (error) {
         console.error("Ошибка API:", error);
@@ -18,13 +23,17 @@ async function fetchAPI(endpoint) {
 }
 
 async function loadBalance() {
+    const balancesList = document.getElementById('balances-list');
+    balancesList.innerHTML = ''; // очищаем загрузку
+    
     const data = await fetchAPI('balance');
-    if (!data) return;
+    
+    if (!data) {
+        balancesList.innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки (Открой в Telegram)</div>';
+        return;
+    }
 
     document.getElementById('total-balance').innerText = data.total_balance;
-
-    const balancesList = document.getElementById('balances-list');
-    balancesList.innerHTML = '';
 
     if (data.balances.length === 0) {
         balancesList.innerHTML = '<div class="loading">У тебя пока нет баллов</div>';
@@ -46,11 +55,15 @@ async function loadBalance() {
 }
 
 async function loadTop() {
-    const data = await fetchAPI('top');
-    if (!data) return;
-
     const topList = document.getElementById('top-list');
     topList.innerHTML = '';
+    
+    const data = await fetchAPI('top');
+    
+    if (!data) {
+        topList.innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки (Открой в Telegram)</div>';
+        return;
+    }
 
     if (data.top.length === 0) {
         topList.innerHTML = '<div class="loading">Пока никого нет</div>';
