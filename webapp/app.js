@@ -51,8 +51,8 @@ async function loadBalance() {
     
     data.my_chats.forEach(item => {
         const icon = item.chat_type === 'channel' ? '📢' : '💬';
-        // Получаем username бота из переменных окружения или захардкодим имя, если нужно
-        const link = `https://t.me/${window.BOT_USERNAME || 'твой_бот'}?start=ref_${item.chat_id}_${data.user_id}`;
+        // ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЙ ЮЗЕРНЕЙМ БОТА
+        const link = `https://t.me/${data.bot_username}?start=ref_${item.chat_id}_${data.user_id}`;
         
         const div = document.createElement('div');
         div.className = 'list-item';
