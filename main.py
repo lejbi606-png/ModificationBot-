@@ -43,7 +43,6 @@ async def init_db():
             db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
             async with db_pool.acquire() as conn:
                 
-                # Миграция старого баланса
                 has_old_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
                 if has_old_balance:
                     await conn.execute('ALTER TABLE users DROP COLUMN balance')
@@ -107,8 +106,6 @@ async def init_db():
                         PRIMARY KEY (chat_id, user_id)
                     );
                 ''')
-                
-                # НОВЫЕ ТАБЛИЦЫ
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS chat_admins (
                         chat_id BIGINT NOT NULL,
@@ -149,7 +146,6 @@ async def init_db():
             await asyncio.sleep(5)
 
 
-# ================== ОТСЛЕЖИВАНИЕ ЧАТОВ И АДМИНОВ ==================
 @dp.my_chat_member()
 async def track_chat_owner(update: ChatMemberUpdated):
     if update.new_chat_member.status in ("administrator", "member"):
@@ -165,7 +161,6 @@ async def track_chat_owner(update: ChatMemberUpdated):
 
             linked_id = getattr(chat, 'linked_chat_id', None)
             async with db_pool.acquire() as conn:
-                # Сохраняем владельца
                 if owner_id:
                     await conn.execute('INSERT INTO bot_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING', owner_id)
                     await conn.execute('''
@@ -174,7 +169,6 @@ async def track_chat_owner(update: ChatMemberUpdated):
                         ON CONFLICT (chat_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, title = EXCLUDED.title, chat_type = EXCLUDED.chat_type, linked_chat_id = EXCLUDED.linked_chat_id
                     ''', chat.id, owner_id, chat.title, chat.type, linked_id)
                 
-                # Обновляем кэш админов
                 await conn.execute('DELETE FROM chat_admins WHERE chat_id = $1', chat.id)
                 for adm in admin_ids:
                     await conn.execute('INSERT INTO chat_admins (chat_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', chat.id, adm)
@@ -184,11 +178,9 @@ async def track_chat_owner(update: ChatMemberUpdated):
             print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
-# ================== СТАРТ И РЕФЕРАЛКИ ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if message.chat.type == "private":
-        # Обработка реферальной ссылки
         if message.text and message.text.startswith("/start ref_"):
             try:
                 _, ref_data = message.text.split()
@@ -197,9 +189,8 @@ async def cmd_start(message: Message):
                 referrer_id = int(referrer_id_str)
                 referred_id = message.from_user.id
                 
-                if referrer_id != referred_id: # Защита от самого себя
+                if referrer_id != referred_id:
                     async with db_pool.acquire() as conn:
-                        # Проверяем, есть ли уже запись
                         exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', referred_id, chat_id)
                         if not exists:
                             check_time = datetime.now() + timedelta(hours=1)
@@ -207,7 +198,7 @@ async def cmd_start(message: Message):
                                 INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
                                 VALUES ($1, $2, $3, 'pending', $4)
                             ''', referrer_id, referred_id, chat_id, check_time)
-                            print(f"🤝 [РЕФ] {referred_id} приглашен в {chat_id} от {referrer_id}. Проверка через час.")
+                            print(f"🤝 [РЕФ] {referred_id} приглашен в {chat_id} от {referrer_id}.")
             except Exception as e:
                 print(f"❌ Ошибка парсинга рефки: {e}")
 
@@ -225,12 +216,10 @@ async def cmd_start(message: Message):
         await message.answer("👋 Я работаю в чате. Пиши сообщения и собирай реакции!", reply_markup=get_main_kb(is_private=False))
 
 
-# ================== МЕНЮ РЕФЕРАЛОК ==================
 @dp.message(F.text == "🔗 Мои ссылки", F.chat.type == "private")
 async def cmd_ref_menu(message: Message):
     user_id = message.from_user.id
     async with db_pool.acquire() as conn:
-        # Ищем чаты, где юзер есть в balances или chat_admins
         rows = await conn.fetch('''
             SELECT DISTINCT m.chat_id, m.title, m.chat_type 
             FROM managed_chats m
@@ -268,7 +257,6 @@ async def handle_getref(callback: CallbackQuery):
     await callback.answer()
 
 
-# ================== БАЛАНС И СБРОС (как было) ==================
 @dp.message(F.text.in_({"/balance", "/баллы", "💰 Баланс"}), F.chat.type != "channel")
 async def cmd_balance(message: Message):
     if not message.from_user: return
@@ -362,7 +350,6 @@ async def handle_reset_chat(callback: CallbackQuery):
         pass
 
 
-# ================== СОХРАНЕНИЕ СООБЩЕНИЙ ==================
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def save_msg(message: Message):
     if not message.from_user or message.from_user.is_bot: return
@@ -374,7 +361,6 @@ async def save_msg(message: Message):
         ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
 
-# ================== КАНАЛЫ ==================
 @dp.channel_post()
 async def handle_channel_post(message: Message):
     if message.chat.type != "channel": return
@@ -395,8 +381,7 @@ async def handle_channel_post(message: Message):
 
 @dp.callback_query(F.data.startswith("earn_"))
 async def handle_earn_button(callback: CallbackQuery):
-    if not callback.message:
-        return
+    if not callback.message: return
     user = callback.from_user
     channel_id = callback.message.chat.id
     msg_id = int(callback.data.split("_", 1)[1])
@@ -425,7 +410,6 @@ async def handle_earn_button(callback: CallbackQuery):
                         if click_count == 2:
                             await callback.answer("⚠️ Лимит исчерпан. Баллы не начислены.", show_alert=True)
                         else:
-                            # Штраф
                             await conn.execute('''
                                 INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
                                 ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
@@ -450,7 +434,6 @@ async def handle_earn_button(callback: CallbackQuery):
         await callback.answer("Ошибка сервера", show_alert=True)
 
 
-# ================== РЕАКЦИИ (С УЧЕТОМ МОДЕРАТОРОВ) ==================
 @dp.message_reaction()
 async def handle_reaction(reaction: MessageReactionUpdated):
     user = reaction.user
@@ -472,7 +455,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             target_user_id = msg['author_id']
             if target_user_id == user.id: return
             
-            # ПРОВЕРКА: Модератор ли?
             is_mod = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user.id)
             multiplier = 5 if is_mod else 1
 
@@ -539,20 +521,17 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
 
-# ================== ФОНОВАЯ ПРОВЕРКА РЕФЕРАЛОВ ==================
 async def check_referrals_loop():
     while True:
         try:
-            await asyncio.sleep(60) # Проверка раз в минуту
+            await asyncio.sleep(60)
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("SELECT referrer_id, referred_id, chat_id FROM referrals WHERE status = 'pending' AND check_at <= NOW()")
                 
             for r in rows:
                 try:
-                    # Проверяем, в чате ли юзер
                     member = await bot.get_chat_member(r['chat_id'], r['referred_id'])
                     if member.status in ['member', 'administrator', 'creator']:
-                        # Начисляем
                         async with db_pool.acquire() as conn:
                             async with conn.transaction():
                                 await conn.execute("UPDATE referrals SET status = 'completed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
@@ -563,20 +542,17 @@ async def check_referrals_loop():
                                 await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, 10, 'referral')", r['chat_id'], r['referrer_id'])
                                 print(f"💰 [РЕФ] {r['referrer_id']} получил +10 за {r['referred_id']}.")
                     else:
-                        # Ливнул
                         async with db_pool.acquire() as conn:
                             await conn.execute("UPDATE referrals SET status = 'failed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
                 except Exception as e:
                     print(f"⚠️ Ошибка проверки рефа {r['referred_id']}: {e}")
                     async with db_pool.acquire() as conn:
                         await conn.execute("UPDATE referrals SET status = 'failed' WHERE referred_id = $1 AND chat_id = $2", r['referred_id'], r['chat_id'])
-                
-                await asyncio.sleep(0.5) # Защита от лимитов Telegram
+                await asyncio.sleep(0.5)
         except Exception as e:
             print(f"❌ Ошибка фонового цикла: {e}")
 
 
-# ================== API ДЛЯ MINI APP ==================
 def validate_init_data(init_data: str) -> dict | None:
     try:
         parsed_data = dict(parse_qsl(init_data))
@@ -607,7 +583,6 @@ async def api_balance(request):
             WHERE b.user_id = $1 AND b.balance != 0 ORDER BY b.balance DESC
         ''', user_id)
         
-        # Список чатов для рефок
         my_chats = await conn.fetch('''
             SELECT DISTINCT m.chat_id, m.title, m.chat_type 
             FROM managed_chats m
@@ -643,44 +618,55 @@ async def api_history(request):
     user_data = validate_init_data(init_data)
     if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
     user_id = user_data.get("id")
-    chat_id = request.query.get("chat_id")
+    chat_id_str = request.query.get("chat_id")
     
     async with db_pool.acquire() as conn:
-        if chat_id:
-            # Если выбран конкретный чат
-            chat_id = int(chat_id)
-            # Проверка: админ ли он этого чата?
+        if chat_id_str:
+            chat_id = int(chat_id_str)
             is_admin = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
             
             if is_admin:
-                # Админ видит ВСЁ по чату
                 rows = await conn.fetch('''
                     SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
-                           u1.first_name as sender_name, u2.first_name as receiver_name
+                           u1.first_name as sender_name, u2.first_name as receiver_name,
+                           m.title as chat_title
                     FROM transactions t
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
                     LEFT JOIN users u2 ON u2.user_id = t.receiver_id
+                    LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
                     WHERE t.chat_id = $1 ORDER BY t.created_at DESC LIMIT 50
                 ''', chat_id)
             else:
-                # Юзер видит только СВОИ
                 rows = await conn.fetch('''
                     SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.created_at, 
-                           u1.first_name as sender_name, u2.first_name as receiver_name
+                           u1.first_name as sender_name, u2.first_name as receiver_name,
+                           m.title as chat_title
                     FROM transactions t
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
                     LEFT JOIN users u2 ON u2.user_id = t.receiver_id
+                    LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
                     WHERE t.chat_id = $1 AND (t.sender_id = $2 OR t.receiver_id = $2) ORDER BY t.created_at DESC LIMIT 50
                 ''', chat_id, user_id)
         else:
-            # Общая история юзера
             rows = await conn.fetch('''
-                SELECT t.id, t.chat_id, t.amount, t.type, t.created_at, m.title as chat_title
-                FROM transactions t LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
-                WHERE t.receiver_id = $1 ORDER BY t.created_at DESC LIMIT 50
+                SELECT t.id, t.chat_id, t.amount, t.type, t.created_at, 
+                       u1.first_name as sender_name, u2.first_name as receiver_name,
+                       m.title as chat_title
+                FROM transactions t 
+                LEFT JOIN users u1 ON u1.user_id = t.sender_id
+                LEFT JOIN users u2 ON u2.user_id = t.receiver_id
+                LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
+                WHERE t.receiver_id = $1 OR t.sender_id = $1 ORDER BY t.created_at DESC LIMIT 50
             ''', user_id)
             
-    return web.json_response({"history": [dict(r) for r in rows]})
+    history_data = []
+    for r in rows:
+        item = dict(r)
+        if isinstance(item.get('created_at'), datetime):
+            item['created_at'] = item['created_at'].isoformat()
+        history_data.append(item)
+
+    return web.json_response({"history": history_data})
 
 
 async def handle_ping(request):
@@ -719,7 +705,6 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # Запускаем фоновую проверку рефералов
     asyncio.create_task(check_referrals_loop())
     
     print("✅ Бот запущен.")
