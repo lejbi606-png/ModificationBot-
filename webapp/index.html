@@ -15,6 +15,7 @@
 
         <div class="nav-tabs">
             <button class="tab-btn active" onclick="switchTab('balance')">Баланс</button>
+            <button class="tab-btn" onclick="switchTab('top')">Топ</button>
             <button class="tab-btn" onclick="switchTab('history')">История</button>
         </div>
 
@@ -39,11 +40,30 @@
                     <div class="loading">Загрузка...</div>
                 </div>
             </section>
+        </div>
 
-            <section class="top-section">
-                <h2>🏆 Топ-5</h2>
+        <!-- Вкладка ТОП -->
+        <div id="tab-top" class="tab-content">
+            <section class="history-section">
+                <div class="history-controls">
+                    <select id="top-chat-select" onchange="loadTop()">
+                        <option value="">Выбери чат...</option>
+                    </select>
+                </div>
                 <div id="top-list" class="list">
                     <div class="loading">Загрузка...</div>
+                </div>
+                
+                <!-- Плашка "Ты" -->
+                <div id="you-plate" class="you-plate" style="display: none;">
+                    <div class="you-left">
+                        <span class="you-rank" id="you-rank">#?</span>
+                        <span class="you-name" id="you-name">Ты</span>
+                    </div>
+                    <div class="you-right">
+                        <span class="you-balance" id="you-balance">0</span>
+                        <span class="you-hint" id="you-hint">до Топ-10: 0</span>
+                    </div>
                 </div>
             </section>
         </div>
