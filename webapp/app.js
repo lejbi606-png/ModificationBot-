@@ -6,7 +6,7 @@ if (user) {
     document.getElementById('greeting').innerText = `Привет, ${user.first_name}!`;
 }
 
-let allMyChats = []; // Глобальный кэш чатов
+let allMyChats = []; 
 
 async function fetchAPI(endpoint, params = "") {
     try {
@@ -38,7 +38,6 @@ async function loadBalance() {
     document.getElementById('total-balance').innerText = data.total_balance;
     allMyChats = data.my_chats || [];
 
-    // Список балансов
     const balancesList = document.getElementById('balances-list');
     balancesList.innerHTML = data.balances.length ? '' : '<div class="loading">У тебя пока нет баллов</div>';
     data.balances.forEach(item => {
@@ -49,7 +48,6 @@ async function loadBalance() {
         balancesList.appendChild(div);
     });
 
-    // Реферальные ссылки
     const refList = document.getElementById('ref-list');
     refList.innerHTML = allMyChats.length ? '' : '<div class="loading">Ты пока не в одном чате</div>';
     
@@ -75,7 +73,6 @@ async function loadBalance() {
         refList.appendChild(div);
     });
     
-    // Заполняем селекты для Топа и Истории
     const topSelect = document.getElementById('top-chat-select');
     const historySelect = document.getElementById('history-chat-select');
     
@@ -103,20 +100,21 @@ function copyLink(link) {
     });
 }
 
-// ================== ТОП ==================
 async function loadTop() {
     const select = document.getElementById('top-chat-select');
     const chatId = select.value;
+    const topList = document.getElementById('top-list');
+    const youPlate = document.getElementById('you-plate');
     
     if (!chatId) {
-        document.getElementById('top-list').innerHTML = '<div class="loading">Выбери чат из списка</div>';
-        document.getElementById('you-plate').style.display = 'none';
+        topList.innerHTML = '<div class="loading">Выбери чат из списка</div>';
+        youPlate.style.display = 'none';
         return;
     }
 
+    topList.innerHTML = '<div class="loading">Загрузка...</div>';
+    
     const data = await fetchAPI('top', `&chat_id=${chatId}`);
-    const topList = document.getElementById('top-list');
-    const youPlate = document.getElementById('you-plate');
     
     if (!data || !data.top) {
         topList.innerHTML = '<div class="loading">Ошибка загрузки</div>';
@@ -130,9 +128,8 @@ async function loadTop() {
         const div = document.createElement('div');
         div.className = 'list-item';
         
-        // Подсветка себя в списке
-        const isMe = item.user_id === data.user_place.name ? true : (item.user_id === tg.initDataUnsafe.user.id);
-        const style = isMe ? 'style="border: 1px solid var(--button-color);"' : '';
+        const isMe = item.user_id === tg.initDataUnsafe.user.id;
+        if (isMe) div.setAttribute('style', 'border: 1px solid var(--button-color);');
         
         div.innerHTML = `
             <div class="top-left">
@@ -141,11 +138,9 @@ async function loadTop() {
             </div>
             <div class="amount">${item.balance}</div>
         `;
-        if (isMe) div.setAttribute('style', 'border: 1px solid var(--button-color);');
         topList.appendChild(div);
     });
 
-    // Плашка Юзера
     youPlate.style.display = 'flex';
     document.getElementById('you-rank').innerText = `#${data.user_place.rank}`;
     document.getElementById('you-name').innerText = data.user_place.name;
@@ -158,12 +153,13 @@ async function loadTop() {
     }
 }
 
-// ================== ИСТОРИЯ ==================
 async function loadHistory() {
     const select = document.getElementById('history-chat-select');
     const historyList = document.getElementById('history-list');
     const chatId = select.value;
     const params = chatId ? `&chat_id=${chatId}` : '';
+    
+    historyList.innerHTML = '<div class="loading">Загрузка...</div>';
     
     const data = await fetchAPI('history', params);
     historyList.innerHTML = '';
@@ -216,5 +212,4 @@ async function loadHistory() {
     });
 }
 
-// Запуск
 loadBalance();
