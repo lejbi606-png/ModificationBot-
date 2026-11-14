@@ -30,7 +30,6 @@ h2 { font-size: 16px; color: var(--hint-color); margin-bottom: 12px; text-transf
 .list-item .amount.negative { color: #ff4a4a; }
 .list-item .amount.positive { color: #4cd964; }
 
-/* Обновленный стиль для текста сообщения (теперь переносится) */
 .list-item .subtitle { 
     font-size: 13px; 
     color: var(--hint-color); 
