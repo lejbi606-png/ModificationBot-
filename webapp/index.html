@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=10">
+    <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
     <div class="container">
@@ -119,22 +119,17 @@
             </section>
         </div>
 
-        <!-- ВКЛАДКА ПИКСЕЛЬ БАТЛ -->
         <div id="tab-pixel" class="tab-content">
             <section class="pixel-section">
                 <h2>👾 Пиксель Батл</h2>
                 <p style="color: var(--hint-color); font-size: 14px; margin-bottom: 10px;">Выбери цвет. Двигай одним пальцем. Зумь двумя.</p>
                 
-                <div id="color-palette" class="palette">
-                    <!-- Цвета будут добавлены через JS -->
-                </div>
+                <div id="color-palette" class="palette"></div>
 
-                <!-- Кнопка сброса -->
-                <button class="tab-btn" style="width: 100%; background: #ff4a4a; color: white; margin-bottom: 10px;" onclick="resetCanvas()">🗑 Сбросить холст</button>
+                <button id="reset-btn" class="tab-btn" style="width: 100%; background: #ff4a4a; color: white; margin-bottom: 10px;" onclick="resetCanvas(event)">🗑 Сбросить холст</button>
 
-                <!-- Контейнер для зума и скролла -->
                 <div id="zoom-container" class="zoom-container">
-                    <canvas id="pixel-canvas" width="800" height="800"></canvas>
+                    <canvas id="pixel-canvas" width="2000" height="2000"></canvas>
                 </div>
                 
                 <p id="pixel-coords" style="text-align: center; margin-top: 10px; font-size: 14px; color: var(--hint-color);">Наведи на поле</p>
@@ -154,6 +149,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=10"></script>
+    <script src="app.js?v=11"></script>
 </body>
 </html>
