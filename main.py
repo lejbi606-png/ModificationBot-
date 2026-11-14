@@ -1061,6 +1061,33 @@ async def api_pixel_set(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def api_pixel_set_batch(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        pixels = data.get("pixels") # Список вида: [{"x": 10, "y": 20, "color": "#FFFFFF"}, ...]
+        
+        if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
+        if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
+        if len(pixels) > 10000: return web.json_response({"error": "Слишком много пикселей (макс 10000)"}, status=400)
+            
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                for p in pixels:
+                    px = int(p.get("x"))
+                    py = int(p.get("y"))
+                    pc = p.get("color")
+                    if 0 <= px < 100 and 0 <= py < 100 and pc:
+                        await conn.execute('''
+                            INSERT INTO pixel_battle (x, y, color) VALUES ($1, $2, $3)
+                            ON CONFLICT (x, y) DO UPDATE SET color = EXCLUDED.color
+                        ''', px, py, pc)
+            
+        return web.json_response({"result": "ok", "count": len(pixels)})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def api_pixel_reset(request):
     try:
         data = await request.json()
@@ -1160,6 +1187,7 @@ async def start_web_server():
 
     app.router.add_get('/api/pixel/get', api_pixel_get)
     app.router.add_post('/api/pixel/set', api_pixel_set)
+    app.router.add_post('/api/pixel/set_batch', api_pixel_set_batch)
     app.router.add_post('/api/pixel/reset', api_pixel_reset)
     
     app.router.add_get('/webapp', serve_index)
