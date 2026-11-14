@@ -677,17 +677,9 @@ async def api_balance(request):
                 link = None
                 
                 try:
-                    link_row = await conn.fetchrow('SELECT invite_link FROM referral_links WHERE chat_id = $1 AND referrer_id = $2 AND invite_link NOT LIKE \'%start=%\'', cid, user_id)
-                    
-                    if link_row and link_row['invite_link']:
-                        link = link_row['invite_link']
-                    else:
-                        inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=2.0)
-                        link = inv.invite_link
-                        await conn.execute('DELETE FROM referral_links WHERE chat_id = $1 AND referrer_id = $2', cid, user_id)
-                        await conn.execute('INSERT INTO referral_links (invite_link, chat_id, referrer_id) VALUES ($1, $2, $3)', link, cid, user_id)
-                except asyncio.TimeoutError:
-                    print(f"⚠️ Таймаут при создании ссылки для {cid}. Пропускаем.")
+                    # Создание ссылки с ТАЙМАУТОМ 1 СЕКУНДА, чтобы не вешать бота
+                    inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=1.0)
+                    link = inv.invite_link
                 except Exception as e:
                     print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
                 
