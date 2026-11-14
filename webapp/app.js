@@ -204,35 +204,35 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ (СО ШТАМПАМИ) ==================
+// ================== ПИКСЕЛЬ БАТЛ (ФИНАЛЬНЫЙ ФИКС) ==================
+const CANVAS_SIZE = 500;
 const GRID_SIZE = 100;
-const CANVAS_SIZE = 800;
-const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 8
+const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 5px
 
 let canvas, ctx, viewport;
 let isPixelInitialized = false;
 let currentColor = "#FF3B30";
 let cachedPixels = [];
 
-// Состояние трансформации
 let scale = 1, translateX = 0, translateY = 0;
-let isDragging = false;
+let isDragging = false, isZooming = false;
 let lastTouchX = 0, lastTouchY = 0;
-let initialDistance = 0;
-let initialScale = 1;
-let isZooming = false;
+let initialDistance = 0, initialScale = 1;
 
-// Состояние штампа
-let stampPixels = []; // Исходные пиксели картинки {x, y, color}
-let stampVisible = false;
-let stampOffsetX = 50; // Центр
-let stampOffsetY = 50;
-let stampScale = 20; // Размер штампа
+let traceImage = null;
+let traceOffsetX = 50, traceOffsetY = 50;
+let traceScale = 1;
+let traceImgWidth = 0, traceImgHeight = 0;
+let traceVisible = false;
+let initialTraceScale = 1;
 
+// 40 ЦВЕТОВ
 const COLORS = [
-    "#FFFFFF", "#000000", "#808080", "#C0C0C0", "#FF0000", "#FF4500", "#FF8C00", "#FFFF00",
-    "#008000", "#00FF00", "#32CD32", "#00FA9A", "#00FFFF", "#0000FF", "#000080", "#8A2BE2",
-    "#FF00FF", "#FF1493", "#A52A2A", "#D2691E"
+    "#FFFFFF", "#000000", "#808080", "#C0C0C0", "#FF0000", "#8B0000", "#FF4500", "#FF8C00", 
+    "#FFFF00", "#808000", "#008000", "#00FF00", "#32CD32", "#00FA9A", "#00FFFF", "#008080",
+    "#0000FF", "#000080", "#8A2BE2", "#4B0082", "#FF00FF", "#800080", "#FF1493", "#FFC0CB",
+    "#A52A2A", "#D2691E", "#F5DEB3", "#E6E6FA", "#ADD8E6", "#90EE90", "#F08080", "#9370DB",
+    "#20B2AA", "#FFD700", "#B22222", "#191970", "#7FFF00", "#DDA0DD", "#98FB98", "#00CED1"
 ];
 
 async function initPixelBattle() {
@@ -268,7 +268,7 @@ async function initPixelBattle() {
     viewport.addEventListener('mouseup', handleMouseUp);
     viewport.addEventListener('wheel', handleWheel, { passive: false });
 
-    // Обработчик клика на самом холсте (самый точный)
+    // Слушаем клик именно на canvas, чтобы координаты были точными
     canvas.addEventListener('click', handleCanvasClick);
 
     isPixelInitialized = true;
@@ -284,7 +284,7 @@ function applyTransform() {
     canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
 }
 
-// --- ОБРАБОТЧИКИ ЖЕСТОВ ---
+// --- УПРАВЛЕНИЕ ЖЕСТАМИ ---
 function handleTouchStart(e) {
     if (e.touches.length === 1) {
         isDragging = true; isZooming = false;
@@ -293,7 +293,8 @@ function handleTouchStart(e) {
     } else if (e.touches.length === 2) {
         isDragging = false; isZooming = true;
         initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        initialScale = scale;
+        if (traceVisible) initialTraceScale = traceScale;
+        else initialScale = scale;
     }
 }
 
@@ -303,33 +304,35 @@ function handleTouchMove(e) {
         const dy = e.touches[0].clientY - lastTouchY;
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewport.dataset.dragged = "true";
         
-        if (stampVisible) {
-            // Двигаем штамп, а не холст
-            stampOffsetX += dx / CELL_SIZE / scale;
-            stampOffsetY += dy / CELL_SIZE / scale;
-            drawCanvas(); // Перерисовываем
+        if (traceVisible) {
+            traceOffsetX += dx / (CELL_SIZE * scale);
+            traceOffsetY += dy / (CELL_SIZE * scale);
+            drawCanvas();
         } else {
             translateX += dx; translateY += dy; applyTransform();
         }
         lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
     } else if (e.touches.length === 2) {
         const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 5);
-        applyTransform();
+        if (traceVisible) {
+            traceScale = Math.max(0.1, Math.min(10, initialTraceScale * (currentDistance / initialDistance)));
+            drawCanvas();
+        } else {
+            scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 6);
+            applyTransform();
+        }
     }
 }
 
 function handleTouchEnd(e) {
     if (e.touches.length === 0) {
-        // Если это был тап (без движения), и штамп не виден - ставим пиксель
-        if (isDragging && viewport.dataset.dragged === "false" && !isZooming && !stampVisible) {
+        if (isDragging && viewport.dataset.dragged === "false" && !isZooming) {
             placePixelFromEvent(e.changedTouches[0]);
         }
         isDragging = false; isZooming = false;
     }
 }
 
-// Десктоп
 function handleMouseDown(e) {
     isDragging = true; isZooming = false;
     lastTouchX = e.clientX; lastTouchY = e.clientY;
@@ -339,8 +342,8 @@ function handleMouseMove(e) {
     if (isDragging) {
         const dx = e.clientX - lastTouchX; const dy = e.clientY - lastTouchY;
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewport.dataset.dragged = "true";
-        if (stampVisible) {
-            stampOffsetX += dx / CELL_SIZE / scale; stampOffsetY += dy / CELL_SIZE / scale;
+        if (traceVisible) {
+            traceOffsetX += dx / (CELL_SIZE * scale); traceOffsetY += dy / (CELL_SIZE * scale);
             drawCanvas();
         } else {
             translateX += dx; translateY += dy; applyTransform();
@@ -349,39 +352,41 @@ function handleMouseMove(e) {
     }
 }
 function handleMouseUp(e) {
-    if (isDragging && viewport.dataset.dragged === "false" && !isZooming && !stampVisible) placePixelFromEvent(e);
+    if (isDragging && viewport.dataset.dragged === "false" && !isZooming) placePixelFromEvent(e);
     isDragging = false; isZooming = false;
 }
 function handleWheel(e) {
     e.preventDefault();
     const rect = viewport.getBoundingClientRect();
     const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
-    const delta = e.deltaY > 0 ? 0.9 : 1.1; const newScale = Math.min(Math.max(scale * delta, 1), 5);
+    const delta = e.deltaY > 0 ? 0.9 : 1.1; const newScale = Math.min(Math.max(scale * delta, 1), 6);
     translateX = mouseX - (mouseX - translateX) * (newScale / scale);
     translateY = mouseY - (mouseY - translateY) * (newScale / scale);
     scale = newScale; applyTransform();
 }
 
 function handleCanvasClick(e) {
-    // Если штамп виден, клик по холсту не ставит пиксель (используем кнопку)
-    if (stampVisible) return;
-    if (viewport.dataset.dragged === "true") return; // Если тащили - не ставим
+    if (viewport.dataset.dragged === "true") return; 
     placePixelFromEvent(e);
 }
 
-// --- ОТРИСОВКА И ЛОГИКА ---
+// --- ИДЕАЛЬНЫЙ КЛИК ---
 async function placePixelFromEvent(e) {
     const rect = canvas.getBoundingClientRect();
-    // Используем offsetX/Y, если событие на canvas, но из-за scale лучше пересчитать от clientX
+    
+    // Теперь rect всегда идеально квадратный, так как Canvas 500x500
     const x = Math.floor(((e.clientX - rect.left) / rect.width) * GRID_SIZE);
     const y = Math.floor(((e.clientY - rect.top) / rect.height) * GRID_SIZE);
 
     if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
-        // Оптимистичная отрисовка
-        ctx.fillStyle = currentColor;
-        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        drawPixelOnCanvas(x, y, currentColor);
         await postAPI('pixel/set', { x, y, color: currentColor });
     }
+}
+
+function drawPixelOnCanvas(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
 }
 
 function drawCanvas() {
@@ -389,22 +394,14 @@ function drawCanvas() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     
-    // Рисуем пиксели
-    cachedPixels.forEach(p => {
-        ctx.fillStyle = p.color;
-        ctx.fillRect(p.x * CELL_SIZE, p.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-    });
+    cachedPixels.forEach(p => drawPixelOnCanvas(p.x, p.y, p.color));
 
-    // Рисуем штамп, если он есть
-    if (stampVisible && stampPixels.length > 0) {
-        stampPixels.forEach(p => {
-            const px = Math.floor(stampOffsetX + p.x);
-            const py = Math.floor(stampOffsetY + p.y);
-            if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-                ctx.fillStyle = p.color;
-                ctx.fillRect(px * CELL_SIZE, py * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            }
-        });
+    if (traceVisible && traceImage) {
+        ctx.globalAlpha = 0.5;
+        const w = traceImgWidth * traceScale;
+        const h = traceImgHeight * traceScale;
+        ctx.drawImage(traceImage, traceOffsetX * CELL_SIZE, traceOffsetY * CELL_SIZE, w * CELL_SIZE, h * CELL_SIZE);
+        ctx.globalAlpha = 1.0;
     }
 }
 
@@ -436,16 +433,32 @@ async function resetCanvas(event) {
     finally { btn.innerText = "🗑 Сбросить"; btn.disabled = false; btn.style.background = '#ff4a4a'; }
 }
 
-// --- ШТАМПЫ ---
+// --- ТРАФАРЕТ ---
 function handleImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-            processImageToStamp(img);
+            traceImage = img;
+            // Изначально делаем так, чтобы картинка влезала целиком в 50 пикселей сетки
+            const maxDim = 50;
+            if (img.width > img.height) {
+                traceImgWidth = maxDim;
+                traceImgHeight = Math.round(img.height * maxDim / img.width);
+            } else {
+                traceImgHeight = maxDim;
+                traceImgWidth = Math.round(img.width * maxDim / img.height);
+            }
+            
+            traceScale = 1;
+            traceOffsetX = (GRID_SIZE - traceImgWidth * traceScale) / 2;
+            traceOffsetY = (GRID_SIZE - traceImgHeight * traceScale) / 2;
+            traceVisible = true;
+
+            document.getElementById('trace-controls').style.display = 'block';
+            drawCanvas();
         }
         img.src = e.target.result;
     }
@@ -453,109 +466,11 @@ function handleImageUpload(event) {
     event.target.value = '';
 }
 
-function processImageToStamp(img) {
-    // Рисуем на невидимом холсте 50x50
-    const maxSize = 50;
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    
-    // Вычисляем пропорции
-    let w = img.width, h = img.height;
-    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; } 
-    else { w = Math.round(w * maxSize / h); h = maxSize; }
-    
-    tempCanvas.width = w; tempCanvas.height = h;
-    tempCtx.drawImage(img, 0, 0, w, h);
-    
-    const imgData = tempCtx.getImageData(0, 0, w, h).data;
-    const pixels = [];
-    
-    // Конвертируем в палитру
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            const r = imgData[i], g = imgData[i+1], b = imgData[i+2], a = imgData[i+3];
-            if (a < 50) continue; // Пропускаем прозрачные
-            const nearestColor = getNearestColor(r, g, b);
-            pixels.push({ x: x, y: y, color: nearestColor });
-        }
-    }
-    
-    stampPixels = pixels;
-    stampVisible = true;
-    stampOffsetX = 50 - w/2; // По центру
-    stampOffsetY = 50 - h/2;
-    
-    document.getElementById('stamp-controls').style.display = 'block';
-    document.getElementById('stamp-scale').value = Math.max(w, h);
-    document.getElementById('stamp-scale-val').innerText = Math.max(w, h);
-    stampScale = Math.max(w, h);
-    
-    drawCanvas();
-}
-
-function getNearestColor(r, g, b) {
-    let minDist = Infinity;
-    let bestColor = "#000000";
-    for (const color of COLORS) {
-        // Парсим HEX в RGB
-        const cr = parseInt(color.slice(1,3), 16);
-        const cg = parseInt(color.slice(3,5), 16);
-        const cb = parseInt(color.slice(5,7), 16);
-        const dist = Math.pow(r - cr, 2) + Math.pow(g - cg, 2) + Math.pow(b - cb, 2);
-        if (dist < minDist) { minDist = dist; bestColor = color; }
-    }
-    return bestColor;
-}
-
-document.getElementById('stamp-scale').addEventListener('input', (e) => {
-    const newSize = parseInt(e.target.value);
-    document.getElementById('stamp-scale-val').innerText = newSize;
-    // Пересчитываем размер штампа (масштабируем координаты)
-    // Это костыль, чтобы не хранить оригинальную картинку, а просто скейлить пиксели
-    const ratio = newSize / stampScale;
-    stampPixels = stampPixels.map(p => ({ x: Math.floor(p.x * ratio), y: Math.floor(p.y * ratio), color: p.color }));
-    stampScale = newSize;
-    drawCanvas();
-});
-
-function applyStamp() {
-    if (!stampVisible || stampPixels.length === 0) return;
-    
-    const pixelsToSave = [];
-    stampPixels.forEach(p => {
-        const px = Math.floor(stampOffsetX + p.x);
-        const py = Math.floor(stampOffsetY + p.y);
-        if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-            pixelsToSave.push({ x: px, y: py, color: p.color });
-        }
-    });
-
-    if (pixelsToSave.length === 0) return tg.showAlert("Штамп полностью за пределами холста");
-
-    tg.showPopup({
-        title: 'Поставить штамп?',
-        message: `Будет закрашено ${pixelsToSave.length} пикселей.`,
-        buttons: [{id: 'ok', type: 'default', text: 'Поставить'}, {id: 'cancel', type: 'cancel'}]
-    }, async (buttonId) => {
-        if (buttonId !== 'ok') return;
-        
-        const res = await postAPI('pixel/set_batch', { pixels: pixelsToSave });
-        if (res.ok) {
-            tg.showAlert("✅ Штамп поставлен!");
-            cancelStamp();
-            fetchAndDrawPixels();
-        } else {
-            tg.showAlert("Ошибка: " + (res.data.error || "Неизвестно"));
-        }
-    });
-}
-
-function cancelStamp() {
-    stampVisible = false;
-    stampPixels = [];
-    document.getElementById('stamp-controls').style.display = 'none';
-    document.getElementById('stamp-input').value = '';
+function cancelTrace() {
+    traceVisible = false;
+    traceImage = null;
+    document.getElementById('trace-controls').style.display = 'none';
+    document.getElementById('trace-input').value = '';
     drawCanvas();
 }
 
