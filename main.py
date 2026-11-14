@@ -42,7 +42,7 @@ async def init_db():
     print("⏳ Подключаемся к базе данных...")
     for attempt in range(1, 6):
         try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=20) # Увеличили пул
+            db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=20)
             async with db_pool.acquire() as conn:
                 
                 has_old_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
@@ -561,7 +561,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             multiplier = 5 if is_mod else 1
 
             async with conn.transaction():
-                # ОПТИМИЗАЦИЯ: Один запрос на обновление данных юзера
                 await conn.execute('''
                     INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                     ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
@@ -756,7 +755,6 @@ async def api_top(request):
             ORDER BY b.balance DESC LIMIT 5
         ''', chat_id)
         
-        # ИСПРАВЛЕНИЕ: Более точный подсчет места
         user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
         user_bal = user_bal_row['balance'] if user_bal_row else 0
         
@@ -1049,8 +1047,8 @@ async def api_pixel_set(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         
-        if x < 0 or x >= 100 or y < 0 or y >= 100:
-            return web.json_response({"error": "Координаты вне поля (100x100)"}, status=400)
+        if x < 0 or x >= 500 or y < 0 or y >= 500:
+            return web.json_response({"error": "Координаты вне поля (500x500)"}, status=400)
             
         async with db_pool.acquire() as conn:
             await conn.execute('''
@@ -1059,33 +1057,6 @@ async def api_pixel_set(request):
             ''', x, y, color)
             
         return web.json_response({"result": "ok"})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
-
-async def api_pixel_set_batch(request):
-    try:
-        data = await request.json()
-        init_data = data.get("initData")
-        pixels = data.get("pixels")
-        
-        if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
-        if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
-        if len(pixels) > 10000: return web.json_response({"error": "Слишком много пикселей (макс 10000)"}, status=400)
-            
-        async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                for p in pixels:
-                    px = int(p.get("x"))
-                    py = int(p.get("y"))
-                    pc = p.get("color")
-                    if 0 <= px < 100 and 0 <= py < 100 and pc:
-                        await conn.execute('''
-                            INSERT INTO pixel_battle (x, y, color) VALUES ($1, $2, $3)
-                            ON CONFLICT (x, y) DO UPDATE SET color = EXCLUDED.color
-                        ''', px, py, pc)
-            
-        return web.json_response({"result": "ok", "count": len(pixels)})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -1189,7 +1160,6 @@ async def start_web_server():
 
     app.router.add_get('/api/pixel/get', api_pixel_get)
     app.router.add_post('/api/pixel/set', api_pixel_set)
-    app.router.add_post('/api/pixel/set_batch', api_pixel_set_batch)
     app.router.add_post('/api/pixel/reset', api_pixel_reset)
     
     app.router.add_get('/webapp', serve_index)
