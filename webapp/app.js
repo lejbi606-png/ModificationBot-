@@ -11,14 +11,18 @@ let allMyChats = [];
 async function fetchAPI(endpoint, params = "") {
     try {
         if (!tg.initData) throw new Error('Нет initData');
+        // Увеличили таймаут до 15 секунд, чтобы сервер успел ответить
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); 
+        const timeoutId = setTimeout(() => controller.abort(), 15000); 
+        
         const response = await fetch(`/api/${endpoint}?initData=${encodeURIComponent(tg.initData)}${params}`, { signal: controller.signal });
         clearTimeout(timeoutId);
+        
         if (!response.ok) throw new Error('Network error');
         return await response.json();
     } catch (error) {
         console.error("Ошибка API:", error);
+        tg.showAlert("Ошибка загрузки данных. Попробуй перезапустить.");
         return null;
     }
 }
@@ -34,7 +38,10 @@ function switchTab(tabName) {
 
 async function loadBalance() {
     const data = await fetchAPI('balance');
-    if (!data) return;
+    if (!data) {
+        document.getElementById('balances-list').innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки. Попробуй закрыть и открыть заново.</div>';
+        return;
+    }
 
     document.getElementById('total-balance').innerText = data.total_balance;
     allMyChats = data.my_chats || [];
@@ -110,7 +117,7 @@ async function loadTop() {
     const data = await fetchAPI('top', `&chat_id=${chatId}`);
     
     if (!data || !data.top) {
-        topList.innerHTML = '<div class="loading">Ошибка загрузки</div>';
+        topList.innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки</div>';
         youPlate.style.display = 'none';
         return;
     }
