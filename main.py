@@ -656,7 +656,7 @@ async def api_balance(request):
             ''', user_id)
             
             my_chats_raw = await conn.fetch('''
-                SELECT m.chat_id, MAX(m.title) as title, MAX(m.chat_type) as chat_type
+                SELECT m.chat_id, MAX(COALESCE(m.title, 'Без названия')) as title, MAX(COALESCE(m.chat_type, 'group')) as chat_type
                 FROM managed_chats m
                 LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
                 LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
@@ -668,7 +668,7 @@ async def api_balance(request):
             seen_titles = set() 
             
             for r in my_chats_raw:
-                title = r['title'] or f"Чат {r['chat_id']}"
+                title = r['title']
                 if title in seen_titles:
                     continue
                 seen_titles.add(title)
@@ -677,8 +677,8 @@ async def api_balance(request):
                 link = None
                 
                 try:
-                    # Создание ссылки с ТАЙМАУТОМ 1 СЕКУНДА, чтобы не вешать бота
-                    inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=1.0)
+                    # Таймаут 2 секунды на создание ссылки
+                    inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=2.0)
                     link = inv.invite_link
                 except Exception as e:
                     print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
