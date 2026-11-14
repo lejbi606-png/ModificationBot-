@@ -134,7 +134,6 @@ async def init_db():
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
                 
-                # НОВАЯ ТАБЛИЦА ДЛЯ РЕФЕРАЛЬНЫХ ССЫЛОК
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS referral_links (
                         invite_link TEXT PRIMARY KEY,
@@ -143,6 +142,8 @@ async def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
+                # Очищаем старые ссылки (которые вели в бота)
+                await conn.execute("DELETE FROM referral_links WHERE invite_link LIKE '%start=%'")
                 
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS referrals (
@@ -155,7 +156,7 @@ async def init_db():
                     );
                 ''')
                 
-            print("✅ База данных готова.")
+            print("✅ База данных готова. Мусорные ссылки удалены.")
             return
         except Exception as e:
             print(f"❌ Ошибка БД (попытка {attempt}/5): {e}")
@@ -196,13 +197,11 @@ async def track_chat_owner(update: ChatMemberUpdated):
             print(f"❌ Не удалось синхронизировать чат {chat.id}: {e}")
 
 
-# ================== ГЛАВНЫЙ ОБРАБОТЧИК ВХОДА В ЧАТ (для рефералки) ==================
 @dp.chat_member()
 async def track_member_join(update: ChatMemberUpdated):
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
     
-    # Пользователь вступил в чат
     if old_status in ('left', 'kicked') and new_status in ('member', 'administrator', 'creator'):
         if not update.invite_link:
             return
@@ -212,31 +211,20 @@ async def track_member_join(update: ChatMemberUpdated):
         chat_id = update.chat.id
         
         async with db_pool.acquire() as conn:
-            link_row = await conn.fetchrow(
-                'SELECT referrer_id FROM referral_links WHERE invite_link = $1',
-                invite_url
-            )
-            if not link_row:
-                return
-            
+            link_row = await conn.fetchrow('SELECT referrer_id FROM referral_links WHERE invite_link = $1', invite_url)
+            if not link_row: return
             referrer_id = link_row['referrer_id']
+            if referrer_id == new_user_id: return
             
-            if referrer_id == new_user_id:
-                return
-            
-            exists = await conn.fetchval(
-                'SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2',
-                new_user_id, chat_id
-            )
-            if exists:
-                return
+            exists = await conn.fetchval('SELECT 1 FROM referrals WHERE referred_id = $1 AND chat_id = $2', new_user_id, chat_id)
+            if exists: return
             
             check_time = datetime.now() + timedelta(hours=1)
             await conn.execute('''
                 INSERT INTO referrals (referrer_id, referred_id, chat_id, status, check_at)
                 VALUES ($1, $2, $3, 'pending', $4)
             ''', referrer_id, new_user_id, chat_id, check_time)
-            print(f"🤝 [РЕФ] Юзер {new_user_id} вступил в {chat_id} по ссылке от {referrer_id}. Проверка через 1ч.")
+            print(f"🤝 [РЕФ] Юзер {new_user_id} вступил в {chat_id} по ссылке от {referrer_id}.")
 
 
 @dp.message(CommandStart())
@@ -282,7 +270,6 @@ async def cmd_ref_menu(message: Message):
     await message.answer("Выбери чат, для которого хочешь получить реферальную ссылку:", reply_markup=kb)
 
 
-# ================== СОЗДАНИЕ ПРЯМОЙ ССЫЛКИ В ЧАТ ==================
 @dp.callback_query(F.data.startswith("getref_"))
 async def handle_getref(callback: CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
@@ -292,6 +279,7 @@ async def handle_getref(callback: CallbackQuery):
         existing = await conn.fetchrow('''
             SELECT invite_link FROM referral_links 
             WHERE chat_id = $1 AND referrer_id = $2
+            AND invite_link NOT LIKE '%start=%'
             ORDER BY created_at DESC LIMIT 1
         ''', chat_id, user.id)
         
@@ -310,7 +298,7 @@ async def handle_getref(callback: CallbackQuery):
                     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
                 ''', link, chat_id, user.id)
             except Exception as e:
-                await callback.answer(f"❌ Не могу создать ссылку. Дай боту права 'Приглашать по ссылке' в чате. Ошибка: {e}", show_alert=True)
+                await callback.answer(f"❌ Не могу создать ссылку. Дай боту права 'Приглашать по ссылке'. Ошибка: {e}", show_alert=True)
                 return
     
     text = (
@@ -657,40 +645,108 @@ async def api_balance(request):
     
     async with db_pool.acquire() as conn:
         total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
+        
         rows = await conn.fetch('''
             SELECT b.chat_id, b.balance, m.title, m.chat_type
-            FROM balances b LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
-            WHERE b.user_id = $1 AND b.balance != 0 ORDER BY b.balance DESC
+            FROM balances b 
+            LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
+            WHERE b.user_id = $1 AND b.balance != 0 
+            ORDER BY b.balance DESC
         ''', user_id)
         
-        my_chats = await conn.fetch('''
-            SELECT DISTINCT m.chat_id, m.title, m.chat_type 
+        my_chats_raw = await conn.fetch('''
+            SELECT m.chat_id, MAX(m.title) as title, MAX(m.chat_type) as chat_type
             FROM managed_chats m
             LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
             LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
             WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL
+            GROUP BY m.chat_id
         ''', user_id)
+        
+        my_chats = []
+        seen_titles = set() # Защита от дублей с одинаковым названием
+        for r in my_chats_raw:
+            title = r['title']
+            if title in seen_titles:
+                continue
+                
+            cid = r['chat_id']
+            try:
+                link_row = await conn.fetchrow('SELECT invite_link FROM referral_links WHERE chat_id = $1 AND referrer_id = $2 AND invite_link NOT LIKE \'%start=%\'', cid, user_id)
+                
+                if link_row and link_row['invite_link']:
+                    link = link_row['invite_link']
+                else:
+                    inv = await bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}")
+                    link = inv.invite_link
+                    await conn.execute('DELETE FROM referral_links WHERE chat_id = $1 AND referrer_id = $2', cid, user_id)
+                    await conn.execute('INSERT INTO referral_links (invite_link, chat_id, referrer_id) VALUES ($1, $2, $3)', link, cid, user_id)
+                
+                seen_titles.add(title)
+                my_chats.append({
+                    "chat_id": cid,
+                    "title": title,
+                    "chat_type": r['chat_type'],
+                    "referral_link": link
+                })
+            except Exception as e:
+                print(f"Пропускаем мертвый чат {cid} (нет прав или удален): {e}")
+                continue
         
     return web.json_response({
         "user_id": user_id,
         "total_balance": total,
         "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows],
-        "my_chats": [{"chat_id": r["chat_id"], "title": r["title"], "chat_type": r["chat_type"]} for r in my_chats],
-        "bot_username": BOT_USERNAME
+        "my_chats": my_chats
     })
 
 
 async def api_top(request):
     init_data = request.query.get("initData")
     if not init_data: return web.json_response({"error": "No initData"}, status=401)
-    if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
+    user_data = validate_init_data(init_data)
+    if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+    user_id = user_data.get("id")
+    chat_id_str = request.query.get("chat_id")
+    
+    if not chat_id_str:
+        return web.json_response({"error": "No chat_id"}, status=400)
+    
+    chat_id = int(chat_id_str)
+    
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT b.user_id, SUM(b.balance) as total, u.first_name
+        # Топ-10
+        top_rows = await conn.fetch('''
+            SELECT b.user_id, b.balance, u.first_name
             FROM balances b JOIN users u ON u.user_id = b.user_id
-            GROUP BY b.user_id, u.first_name ORDER BY total DESC LIMIT 5
-        ''')
-    return web.json_response({"top": [{"user_id": r["user_id"], "balance": r["total"], "first_name": r["first_name"] or "Аноним"} for r in rows]})
+            WHERE b.chat_id = $1
+            ORDER BY b.balance DESC LIMIT 10
+        ''', chat_id)
+        
+        # Инфа по юзеру
+        user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+        user_bal = user_bal_row['balance'] if user_bal_row else 0
+        
+        rank_row = await conn.fetchval('SELECT COUNT(*) + 1 FROM balances WHERE chat_id = $1 AND balance > $2', chat_id, user_bal)
+        
+        to_top10 = 0
+        if len(top_rows) >= 10 and rank_row > 10:
+            # Сколько не хватает до 10-го места
+            tenth_place_bal = top_rows[-1]['balance']
+            to_top10 = (tenth_place_bal - user_bal) + 1
+        elif len(top_rows) < 10 and rank_row > len(top_rows):
+             # Если в чате меньше 10 человек
+             to_top10 = 1 
+             
+        return web.json_response({
+            "top": [{"user_id": r["user_id"], "balance": r["balance"], "first_name": r["first_name"] or "Аноним"} for r in top_rows],
+            "user_place": {
+                "rank": rank_row,
+                "balance": user_bal,
+                "name": user_data.get('first_name', 'Ты'),
+                "to_top10": to_top10
+            }
+        })
 
 
 async def api_history(request):
