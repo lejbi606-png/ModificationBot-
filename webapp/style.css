@@ -76,27 +76,30 @@ input[type="checkbox"] { transform: scale(1.3); accent-color: var(--button-color
 .you-balance { font-weight: 700; font-size: 16px; color: #4cd964; }
 .you-hint { font-size: 12px; color: var(--hint-color); }
 
-/* Стили для пиксель батла */
+/* Пиксель батл */
 .palette { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 16px; }
-.color-swatch { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform 0.1s; }
+.color-swatch { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform 0.1s; }
 .color-swatch:hover { transform: scale(1.1); }
 .color-swatch.selected { border-color: white; transform: scale(1.2); box-shadow: 0 0 10px rgba(255,255,255,0.5); }
 
 .zoom-container { 
     width: 100%;
-    height: 400px;
+    height: 420px;
     overflow: auto;
-    background: var(--secondary-bg);
+    background: #333;
     border-radius: 12px;
     touch-action: pan-x pan-y;
-    display: flex;
+    -webkit-overflow-scrolling: touch;
 }
 
 canvas { 
-    background: #ffffff; /* БЕЛЫЙ ХОЛСТ */
-    image-rendering: pixelated; 
-    width: 800px; 
-    height: 800px; 
+    background: #ffffff;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 1000px;
+    height: 1000px;
     cursor: crosshair;
-    flex-shrink: 0;
+    display: block;
+    border: 2px solid #000;
 }
