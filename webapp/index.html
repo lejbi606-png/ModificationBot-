@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
     <div class="container">
@@ -129,9 +129,12 @@
                     <!-- Цвета будут добавлены через JS -->
                 </div>
 
+                <!-- Кнопка сброса -->
+                <button class="tab-btn" style="width: 100%; background: #ff4a4a; color: white; margin-bottom: 10px;" onclick="resetCanvas()">🗑 Сбросить холст</button>
+
                 <!-- Контейнер для зума и скролла -->
                 <div id="zoom-container" class="zoom-container">
-                    <canvas id="pixel-canvas" width="500" height="500"></canvas>
+                    <canvas id="pixel-canvas" width="800" height="800"></canvas>
                 </div>
                 
                 <p id="pixel-coords" style="text-align: center; margin-top: 10px; font-size: 14px; color: var(--hint-color);">Наведи на поле</p>
@@ -151,6 +154,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=9"></script>
+    <script src="app.js?v=10"></script>
 </body>
 </html>
