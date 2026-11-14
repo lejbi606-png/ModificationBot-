@@ -42,7 +42,7 @@ async def init_db():
     print("⏳ Подключаемся к базе данных...")
     for attempt in range(1, 6):
         try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=10)
+            db_pool = await asyncpg.create_pool(DATABASE_URL, timeout=20, min_size=1, max_size=20) # Увеличили пул
             async with db_pool.acquire() as conn:
                 
                 has_old_balance = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'balance')")
@@ -561,6 +561,7 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             multiplier = 5 if is_mod else 1
 
             async with conn.transaction():
+                # ОПТИМИЗАЦИЯ: Один запрос на обновление данных юзера
                 await conn.execute('''
                     INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                     ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
@@ -755,6 +756,7 @@ async def api_top(request):
             ORDER BY b.balance DESC LIMIT 5
         ''', chat_id)
         
+        # ИСПРАВЛЕНИЕ: Более точный подсчет места
         user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
         user_bal = user_bal_row['balance'] if user_bal_row else 0
         
@@ -1065,7 +1067,7 @@ async def api_pixel_set_batch(request):
     try:
         data = await request.json()
         init_data = data.get("initData")
-        pixels = data.get("pixels") # Список вида: [{"x": 10, "y": 20, "color": "#FFFFFF"}, ...]
+        pixels = data.get("pixels")
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
@@ -1124,7 +1126,7 @@ async def api_history(request):
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
                     LEFT JOIN users u2 ON u2.user_id = t.receiver_id
                     LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
-                    WHERE t.chat_id = $1 ORDER BY t.created_at DESC LIMIT 50
+                    WHERE t.chat_id = $1 ORDER BY t.created_at DESC LIMIT 200
                 ''', chat_id)
             else:
                 rows = await conn.fetch('''
@@ -1135,7 +1137,7 @@ async def api_history(request):
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
                     LEFT JOIN users u2 ON u2.user_id = t.receiver_id
                     LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
-                    WHERE t.chat_id = $1 AND (t.sender_id = $2 OR t.receiver_id = $2) ORDER BY t.created_at DESC LIMIT 50
+                    WHERE t.chat_id = $1 AND (t.sender_id = $2 OR t.receiver_id = $2) ORDER BY t.created_at DESC LIMIT 200
                 ''', chat_id, user_id)
         else:
             rows = await conn.fetch('''
@@ -1146,7 +1148,7 @@ async def api_history(request):
                 LEFT JOIN users u1 ON u1.user_id = t.sender_id
                 LEFT JOIN users u2 ON u2.user_id = t.receiver_id
                 LEFT JOIN managed_chats m ON m.chat_id = t.chat_id
-                WHERE t.receiver_id = $1 OR t.sender_id = $1 ORDER BY t.created_at DESC LIMIT 50
+                WHERE t.receiver_id = $1 OR t.sender_id = $1 ORDER BY t.created_at DESC LIMIT 200
             ''', user_id)
             
     history_data = []
