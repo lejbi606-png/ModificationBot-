@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
     <div class="container">
@@ -13,9 +13,11 @@
             <h1 id="greeting">Привет!</h1>
         </header>
 
-        <div class="nav-tabs">
+        <div class="nav-tabs" style="overflow-x: auto; white-space: nowrap;">
             <button class="tab-btn active" onclick="switchTab('balance')">Баланс</button>
-            <button class="tab-btn" onclick="switchTab('top')">Топ</button>
+            <button class="tab-btn" onclick="switchTab('top')">Топ-5</button>
+            <button class="tab-btn" onclick="switchTab('shop')">🛒 Магазин</button>
+            <button class="tab-btn" onclick="switchTab('bets')">📈 Ставки</button>
             <button class="tab-btn" onclick="switchTab('history')">История</button>
         </div>
 
@@ -59,8 +61,61 @@
                     </div>
                     <div class="you-right">
                         <span class="you-balance" id="you-balance">0</span>
-                        <span class="you-hint" id="you-hint">до Топ-10: 0</span>
+                        <span class="you-hint" id="you-hint">до Топ-5: 0</span>
                     </div>
+                </div>
+            </section>
+        </div>
+
+        <div id="tab-shop" class="tab-content">
+            <section class="shop-section">
+                <div class="history-controls">
+                    <select id="shop-chat-select" onchange="loadShop()">
+                        <option value="">Выбери чат для списания...</option>
+                    </select>
+                </div>
+
+                <div class="shop-card">
+                    <h2>🎰 Казино</h2>
+                    <p style="color: var(--hint-color); font-size: 14px; margin-bottom: 10px;">Шанс 50/50. Удвой ставку или проиграй.</p>
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <input type="number" id="casino-bet" placeholder="Ставка" style="flex: 1; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
+                        <button class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="playCasino()">Крутить</button>
+                    </div>
+                </div>
+
+                <div class="shop-card">
+                    <h2>📢 Пост в ТГК (20 баллов)</h2>
+                    <textarea id="post-text" placeholder="Текст сообщения..." rows="3" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px; resize: none;"></textarea>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);">
+                        <input type="checkbox" id="post-anon"> Отправить анонимно
+                    </label>
+                    <button class="tab-btn" style="width: 100%; background: var(--button-color); color: white;" onclick="sendPost()">Опубликовать</button>
+                </div>
+            </section>
+        </div>
+
+        <!-- ВКЛАДКА СТАВКИ -->
+        <div id="tab-bets" class="tab-content">
+            <section class="bets-section">
+                <div class="history-controls">
+                    <select id="bets-chat-select" onchange="loadBets()">
+                        <option value="">Выбери чат...</option>
+                    </select>
+                </div>
+                
+                <!-- Админ панель (скрыта для обычных) -->
+                <div id="admin-bets-panel" class="shop-card" style="display: none;">
+                    <h2>Создать событие</h2>
+                    <input type="text" id="bet-question" placeholder="Вопрос (например: Выиграем?)" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <input type="number" id="bet-hours" placeholder="Часов" value="3" style="width: 80px; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
+                        <button class="tab-btn" style="flex: 1; background: var(--button-color); color: white;" onclick="createBet()">Создать</button>
+                    </div>
+                </div>
+
+                <div id="bets-list" class="list">
+                    <div class="loading">Загрузка...</div>
                 </div>
             </section>
         </div>
@@ -78,6 +133,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=6"></script>
 </body>
 </html>
