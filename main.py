@@ -141,7 +141,6 @@ async def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
-                # Очистка старых ссылок
                 await conn.execute("DELETE FROM referral_links WHERE invite_link LIKE '%start=%'")
                 
                 await conn.execute('''
