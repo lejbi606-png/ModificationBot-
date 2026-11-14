@@ -6,6 +6,8 @@ if (user) {
     document.getElementById('greeting').innerText = `Привет, ${user.first_name}!`;
 }
 
+let allMyChats = []; // Глобальный кэш чатов
+
 async function fetchAPI(endpoint, params = "") {
     try {
         if (!tg.initData) throw new Error('Нет initData');
@@ -25,9 +27,8 @@ function switchTab(tabName) {
     document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
     document.getElementById(`tab-${tabName}`).classList.add('active');
 
-    if (tabName === 'history') {
-        loadHistory();
-    }
+    if (tabName === 'history') loadHistory();
+    if (tabName === 'top') loadTop();
 }
 
 async function loadBalance() {
@@ -35,7 +36,9 @@ async function loadBalance() {
     if (!data) return;
 
     document.getElementById('total-balance').innerText = data.total_balance;
+    allMyChats = data.my_chats || [];
 
+    // Список балансов
     const balancesList = document.getElementById('balances-list');
     balancesList.innerHTML = data.balances.length ? '' : '<div class="loading">У тебя пока нет баллов</div>';
     data.balances.forEach(item => {
@@ -46,23 +49,49 @@ async function loadBalance() {
         balancesList.appendChild(div);
     });
 
+    // Реферальные ссылки
     const refList = document.getElementById('ref-list');
-    refList.innerHTML = data.my_chats.length ? '' : '<div class="loading">Ты пока не в одном чате</div>';
+    refList.innerHTML = allMyChats.length ? '' : '<div class="loading">Ты пока не в одном чате</div>';
     
-    data.my_chats.forEach(item => {
+    allMyChats.forEach(item => {
         const icon = item.chat_type === 'channel' ? '📢' : '💬';
-        const link = `https://t.me/${data.bot_username}?start=ref_${item.chat_id}_${data.user_id}`;
-        
         const div = document.createElement('div');
         div.className = 'list-item';
         div.style.flexDirection = 'column';
         div.style.alignItems = 'flex-start';
         div.style.gap = '8px';
+        
+        let buttonHtml = '';
+        if (item.referral_link) {
+            buttonHtml = `<button class="tab-btn" style="width:100%; background: var(--button-color); color: white;" onclick="copyLink('${item.referral_link}')">Скопировать ссылку</button>`;
+        } else {
+            buttonHtml = `<div style="color: #ff4a4a; font-size: 12px; text-align: center; width: 100%;">Нет прав на ссылку (дай боту админку)</div>`;
+        }
+
         div.innerHTML = `
             <div class="title">${icon} ${item.title || item.chat_id}</div>
-            <button class="tab-btn" style="width:100%; background: var(--button-color); color: white;" onclick="copyLink('${link}')">Скопировать ссылку</button>
+            ${buttonHtml}
         `;
         refList.appendChild(div);
+    });
+    
+    // Заполняем селекты для Топа и Истории
+    const topSelect = document.getElementById('top-chat-select');
+    const historySelect = document.getElementById('history-chat-select');
+    
+    topSelect.innerHTML = '<option value="">Выбери чат...</option>';
+    historySelect.innerHTML = '<option value="">Моя общая история</option>';
+    
+    allMyChats.forEach(chat => {
+        const optTop = document.createElement('option');
+        optTop.value = chat.chat_id;
+        optTop.innerText = chat.title;
+        topSelect.appendChild(optTop);
+        
+        const optHist = document.createElement('option');
+        optHist.value = chat.chat_id;
+        optHist.innerText = `Админ: ${chat.title}`;
+        historySelect.appendChild(optHist);
     });
 }
 
@@ -74,43 +103,71 @@ function copyLink(link) {
     });
 }
 
+// ================== ТОП ==================
 async function loadTop() {
-    const data = await fetchAPI('top');
-    if (!data) return;
+    const select = document.getElementById('top-chat-select');
+    const chatId = select.value;
+    
+    if (!chatId) {
+        document.getElementById('top-list').innerHTML = '<div class="loading">Выбери чат из списка</div>';
+        document.getElementById('you-plate').style.display = 'none';
+        return;
+    }
+
+    const data = await fetchAPI('top', `&chat_id=${chatId}`);
     const topList = document.getElementById('top-list');
-    topList.innerHTML = data.top.length ? '' : '<div class="loading">Пока никого</div>';
+    const youPlate = document.getElementById('you-plate');
+    
+    if (!data || !data.top) {
+        topList.innerHTML = '<div class="loading">Ошибка загрузки</div>';
+        youPlate.style.display = 'none';
+        return;
+    }
+
+    topList.innerHTML = data.top.length ? '' : '<div class="loading">Никого нет</div>';
+    
     data.top.forEach((item, index) => {
         const div = document.createElement('div');
         div.className = 'list-item';
-        div.innerHTML = `<div class="top-left"><div class="rank">${index + 1}</div><div class="title">${item.first_name}</div></div><div class="amount">${item.balance}</div>`;
+        
+        // Подсветка себя в списке
+        const isMe = item.user_id === data.user_place.name ? true : (item.user_id === tg.initDataUnsafe.user.id);
+        const style = isMe ? 'style="border: 1px solid var(--button-color);"' : '';
+        
+        div.innerHTML = `
+            <div class="top-left">
+                <div class="rank">${index + 1}</div>
+                <div class="title">${item.first_name}</div>
+            </div>
+            <div class="amount">${item.balance}</div>
+        `;
+        if (isMe) div.setAttribute('style', 'border: 1px solid var(--button-color);');
         topList.appendChild(div);
     });
+
+    // Плашка Юзера
+    youPlate.style.display = 'flex';
+    document.getElementById('you-rank').innerText = `#${data.user_place.rank}`;
+    document.getElementById('you-name').innerText = data.user_place.name;
+    document.getElementById('you-balance').innerText = `${data.user_place.balance} б.`;
+    
+    if (data.user_place.to_top10 > 0) {
+        document.getElementById('you-hint').innerText = `До Топ-10: ${data.user_place.to_top10} б.`;
+    } else {
+        document.getElementById('you-hint').innerText = `Ты в Топ-10!`;
+    }
 }
 
-let historyChatsLoaded = false;
-
+// ================== ИСТОРИЯ ==================
 async function loadHistory() {
     const select = document.getElementById('history-chat-select');
     const historyList = document.getElementById('history-list');
-    
-    if (!historyChatsLoaded) {
-        const data = await fetchAPI('balance');
-        if (data && data.my_chats) {
-            data.my_chats.forEach(chat => {
-                const opt = document.createElement('option');
-                opt.value = chat.chat_id;
-                opt.innerText = `Админ: ${chat.title || 'Без названия'}`;
-                select.appendChild(opt);
-            });
-            historyChatsLoaded = true;
-        }
-    }
-
     const chatId = select.value;
     const params = chatId ? `&chat_id=${chatId}` : '';
+    
     const data = await fetchAPI('history', params);
-
     historyList.innerHTML = '';
+
     if (!data || !data.history || !data.history.length) {
         historyList.innerHTML = '<div class="loading">История пуста</div>';
         return;
@@ -127,11 +184,7 @@ async function loadHistory() {
         }
 
         if (item.type === 'reaction_earn') {
-            if (chatId) {
-                title += `${item.sender_name || 'Кто-то'} ➔ ${item.receiver_name || 'Кому-то'}`;
-            } else {
-                title += `Реакция от ${item.sender_name || 'Кто-то'}`;
-            }
+            title += chatId ? `${item.sender_name || 'Кто-то'} ➔ ${item.receiver_name || 'Кому-то'}` : `Реакция от ${item.sender_name || 'Кто-то'}`;
             amountStr = `+${item.amount}`;
         } else if (item.type === 'channel_earn') {
             title += `Забрал балл в канале`;
@@ -163,5 +216,5 @@ async function loadHistory() {
     });
 }
 
+// Запуск
 loadBalance();
-loadTop();
