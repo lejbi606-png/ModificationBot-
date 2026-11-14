@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
     <div class="container">
@@ -22,6 +22,7 @@
             <button class="tab-btn" onclick="switchTab('history')">История</button>
         </div>
 
+        <!-- БАЛАНС -->
         <div id="tab-balance" class="tab-content active">
             <div class="total-balance-card">
                 <span class="label">Общий баланс</span>
@@ -38,6 +39,7 @@
             </section>
         </div>
 
+        <!-- ТОП -->
         <div id="tab-top" class="tab-content">
             <section class="history-section">
                 <div class="history-controls">
@@ -57,6 +59,7 @@
             </section>
         </div>
 
+        <!-- МАГАЗИН -->
         <div id="tab-shop" class="tab-content">
             <section class="shop-section">
                 <div class="history-controls">
@@ -81,6 +84,7 @@
             </section>
         </div>
 
+        <!-- СТАВКИ -->
         <div id="tab-bets" class="tab-content">
             <section class="bets-section">
                 <div class="history-controls">
@@ -98,6 +102,7 @@
             </section>
         </div>
 
+        <!-- ПИКСЕЛЬ -->
         <div id="tab-pixel" class="tab-content">
             <section class="pixel-section">
                 <h2>👾 Пиксель Батл</h2>
@@ -105,8 +110,27 @@
                 
                 <div id="color-palette" class="palette"></div>
 
-                <button id="reset-btn" class="tab-btn" style="width: 100%; background: #ff4a4a; color: white; margin-bottom: 10px;" onclick="resetCanvas(event)">🗑 Сбросить холст</button>
+                <!-- Управление штампом (скрыто по умолчанию) -->
+                <div id="stamp-controls" class="shop-card" style="display: none; margin-bottom: 10px;">
+                    <h2 id="stamp-title" style="font-size: 14px; color: white; text-transform: none; margin-bottom: 8px;">Штамп: Загружен</h2>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                        <span style="font-size: 12px; color: var(--hint-color);">Размер:</span>
+                        <input type="range" id="stamp-scale" min="5" max="50" value="20" style="flex: 1;">
+                        <span id="stamp-scale-val" style="font-size: 12px; width: 30px; text-align: right;">20</span>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="applyStamp()">Поставить</button>
+                        <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="cancelStamp()">Отмена</button>
+                    </div>
+                </div>
 
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <button id="reset-btn" class="tab-btn" style="flex: 1; background: #ff4a4a; color: white;" onclick="resetCanvas(event)">🗑 Сбросить</button>
+                    <button id="upload-stamp-btn" class="tab-btn" style="flex: 1; background: var(--button-color); color: white;" onclick="document.getElementById('stamp-input').click()">📁 Загрузить</button>
+                    <input type="file" id="stamp-input" accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
+                </div>
+
+                <!-- Контейнер для зума и пана -->
                 <div id="pixel-viewport" class="pixel-viewport">
                     <canvas id="pixel-canvas" width="800" height="800"></canvas>
                 </div>
@@ -115,6 +139,7 @@
             </section>
         </div>
 
+        <!-- ИСТОРИЯ -->
         <div id="tab-history" class="tab-content">
             <section class="history-section">
                 <div class="history-controls">
@@ -124,6 +149,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=17"></script>
+    <script src="app.js?v=18"></script>
 </body>
 </html>
