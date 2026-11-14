@@ -204,10 +204,10 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ ==================
+// ================== ПИКСЕЛЬ БАТЛ (200x200 + ШТАМП) ==================
 const CANVAS_SIZE = 2000;
-const GRID_SIZE = 500;
-const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 4px
+const GRID_SIZE = 200; // УМЕНЬШЕНО ДО 200
+const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 10px
 
 let canvas, ctx, viewport;
 let isPixelInitialized = false;
@@ -219,10 +219,11 @@ let isDragging = false, isZooming = false;
 let lastTouchX = 0, lastTouchY = 0;
 let initialDistance = 0, initialScale = 1;
 
+let originalStampImg = null;
 let stampPixels = [];
 let stampVisible = false;
-let stampX = 250; 
-let stampY = 250;
+let stampX = 100; 
+let stampY = 100;
 let stampScale = 1;
 let initialStampScale = 1;
 let stampImgWidth = 0, stampImgHeight = 0;
@@ -313,6 +314,7 @@ function handleTouchMove(e) {
         const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         if (stampVisible) {
             stampScale = Math.max(0.1, Math.min(5, initialStampScale * (currentDistance / initialDistance)));
+            resampleStamp(); // ПЕРЕСЧЕТ РАЗРЕШЕНИЯ
             drawCanvas();
         } else {
             scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 15);
@@ -360,6 +362,7 @@ function handleWheel(e) {
     
     if (stampVisible) {
         stampScale = Math.max(0.1, Math.min(5, stampScale * delta));
+        resampleStamp(); // ПЕРЕСЧЕТ РАЗРЕШЕНИЯ
         drawCanvas();
     } else {
         const newScale = Math.min(Math.max(scale * delta, 1), 15);
@@ -450,7 +453,14 @@ function handleImageUpload(event) {
     reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-            processImageToStamp(img);
+            originalStampImg = img; // СОХРАНЯЕМ ОРИГИНАЛ
+            stampScale = 1;
+            resampleStamp(); // ПЕРВЫЙ ПЕРЕСЧЕТ
+            stampX = (GRID_SIZE - stampImgWidth * stampScale) / 2;
+            stampY = (GRID_SIZE - stampImgHeight * stampScale) / 2;
+            stampVisible = true;
+            document.getElementById('stamp-controls').style.display = 'block';
+            drawCanvas();
         }
         img.src = e.target.result;
     }
@@ -458,24 +468,28 @@ function handleImageUpload(event) {
     event.target.value = '';
 }
 
-function processImageToStamp(img) {
-    const maxSize = 50;
+function resampleStamp() {
+    if (!originalStampImg) return;
+    
+    // Базовый размер берем 50, умножаем на масштаб
+    const targetWidth = Math.max(1, Math.round(50 * stampScale));
+    const ratio = originalStampImg.height / originalStampImg.width;
+    const targetHeight = Math.max(1, Math.round(targetWidth * ratio));
+
     const tempCanvas = document.createElement('canvas');
     const tempCtx = tempCanvas.getContext('2d');
+    tempCanvas.width = targetWidth;
+    tempCanvas.height = targetHeight;
     
-    let w = img.width, h = img.height;
-    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; } 
-    else { w = Math.round(w * maxSize / h); h = maxSize; }
+    tempCtx.imageSmoothingEnabled = false; // Отключаем сглаживание
+    tempCtx.drawImage(originalStampImg, 0, 0, targetWidth, targetHeight);
     
-    tempCanvas.width = w; tempCanvas.height = h;
-    tempCtx.drawImage(img, 0, 0, w, h);
-    
-    const imgData = tempCtx.getImageData(0, 0, w, h).data;
+    const imgData = tempCtx.getImageData(0, 0, targetWidth, targetHeight).data;
     const pixels = [];
     
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
+    for (let y = 0; y < targetHeight; y++) {
+        for (let x = 0; x < targetWidth; x++) {
+            const i = (y * targetWidth + x) * 4;
             const r = imgData[i], g = imgData[i+1], b = imgData[i+2], a = imgData[i+3];
             if (a < 50) continue; 
             const nearestColor = getNearestColor(r, g, b);
@@ -484,15 +498,8 @@ function processImageToStamp(img) {
     }
     
     stampPixels = pixels;
-    stampImgWidth = w;
-    stampImgHeight = h;
-    stampScale = 1;
-    stampX = (GRID_SIZE - w) / 2; 
-    stampY = (GRID_SIZE - h) / 2;
-    stampVisible = true;
-    
-    document.getElementById('stamp-controls').style.display = 'block';
-    drawCanvas();
+    stampImgWidth = targetWidth;
+    stampImgHeight = targetHeight;
 }
 
 function getNearestColor(r, g, b) {
@@ -547,6 +554,7 @@ function applyStamp() {
 function cancelStamp() {
     stampVisible = false;
     stampPixels = [];
+    originalStampImg = null;
     document.getElementById('stamp-controls').style.display = 'none';
     document.getElementById('stamp-input').value = '';
     drawCanvas();
