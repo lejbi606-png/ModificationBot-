@@ -27,9 +27,16 @@ async function postAPI(endpoint, body) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...body, initData: tg.initData })
         });
-        return { ok: response.ok, data: await response.json() };
+        
+        // Пробуем спарсить JSON, если не получилось - показываем что вернул сервер
+        const text = await response.text();
+        try {
+            return { ok: response.ok, data: JSON.parse(text) };
+        } catch {
+            return { ok: false, data: { error: `Сервер ответил: ${text.substring(0, 100)}` } };
+        }
     } catch (error) {
-        return { ok: false, data: { error: "Ошибка сети" } };
+        return { ok: false, data: { error: "Ошибка сети: " + error.message } };
     }
 }
 
@@ -177,6 +184,7 @@ async function loadTop() {
 }
 
 async function loadShop() {}
+
 async function playCasino() {
     const chatId = document.getElementById('shop-chat-select').value;
     const betStr = document.getElementById('casino-bet').value;
@@ -330,16 +338,16 @@ async function resolveBet(predId, outcome) {
 }
 
 // ================== ПИКСЕЛЬ БАТЛ ==================
+const CELL_SIZE = 20; // Размер клетки в canvas-пикселях
+const CANVAS_SIZE = 2000; // 100 * 20
+const PIXEL_SIZE = 18; // Пиксель цвета (18x18), оставляет 2px на сетку
+const PIXEL_OFFSET = 1; // Отступ пикселя от края клетки
+
 let canvas, ctx, zoomContainer;
 let isPixelInitialized = false;
 let currentColor = "#FF3B30";
 let cachedPixels = [];
 let currentZoomScale = 1;
-
-const CELL_SIZE = 8; // 800/100
-const CANVAS_SIZE = 800;
-const MAX_ZOOM = 2400; // 3x
-const MIN_ZOOM = 800;
 
 const COLORS = [
     "#FFFFFF", "#000000", "#808080", "#C0C0C0",
@@ -357,6 +365,7 @@ async function initPixelBattle() {
     
     canvas = document.getElementById('pixel-canvas');
     ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
     zoomContainer = document.getElementById('zoom-container');
     
     const palette = document.getElementById('color-palette');
@@ -374,8 +383,9 @@ async function initPixelBattle() {
         palette.appendChild(div);
     });
 
+    // Зум двумя пальцами
     let initialDistance = 0;
-    let initialWidth = CANVAS_SIZE;
+    let initialWidth = 1000;
 
     zoomContainer.addEventListener('touchstart', (e) => {
         if (e.touches.length === 2) {
@@ -397,35 +407,30 @@ async function initPixelBattle() {
             );
             
             let newWidth = initialWidth * (currentDistance / initialDistance);
-            newWidth = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newWidth));
+            newWidth = Math.max(1000, Math.min(3000, newWidth));
             
             canvas.style.width = newWidth + 'px';
             canvas.style.height = newWidth + 'px';
             
-            const newScale = newWidth / CANVAS_SIZE;
-            // Если перешли порог 1.5 - перерисовываем с сеткой или без
-            if ((newScale > 1.5 && currentZoomScale <= 1.5) || (newScale <= 1.5 && currentZoomScale > 1.5)) {
-                currentZoomScale = newScale;
-                redrawCanvas();
-            } else {
-                currentZoomScale = newScale;
-            }
+            currentZoomScale = newWidth / 1000;
         }
     }, { passive: false });
 
+    // Клик по холсту (ставит пиксель)
     canvas.addEventListener('click', async (e) => {
         const rect = canvas.getBoundingClientRect();
         const x = Math.floor((e.clientX - rect.left) / rect.width * 100);
         const y = Math.floor((e.clientY - rect.top) / rect.height * 100);
         
         if (x >= 0 && x < 100 && y >= 0 && y < 100) {
+            // Оптимистичная отрисовка
             ctx.fillStyle = currentColor;
-            if (currentZoomScale > 1.5) {
-                // С зазором для сетки
-                ctx.fillRect(x * CELL_SIZE + 0.5, y * CELL_SIZE + 0.5, CELL_SIZE - 1, CELL_SIZE - 1);
-            } else {
-                ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            }
+            ctx.fillRect(
+                x * CELL_SIZE + PIXEL_OFFSET, 
+                y * CELL_SIZE + PIXEL_OFFSET, 
+                PIXEL_SIZE, 
+                PIXEL_SIZE
+            );
             
             await postAPI('pixel/set', { x, y, color: currentColor });
         }
@@ -449,33 +454,29 @@ async function initPixelBattle() {
 
 function redrawCanvas() {
     if (!isPixelInitialized) return;
-    const showGrid = currentZoomScale > 1.5;
     
-    // БЕЛЫЙ фон
+    // 1. Белый фон
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     
-    // Рисуем пиксели
+    // 2. Пиксели (18x18, с отступом 1px от края клетки 20x20)
     cachedPixels.forEach(p => {
         ctx.fillStyle = p.color;
-        if (showGrid) {
-            // С зазором 1px (пиксель 7x7 внутри ячейки 8x8)
-            ctx.fillRect(p.x * CELL_SIZE + 0.5, p.y * CELL_SIZE + 0.5, CELL_SIZE - 1, CELL_SIZE - 1);
-        } else {
-            // Полная заливка ячейки
-            ctx.fillRect(p.x * CELL_SIZE, p.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-        }
+        ctx.fillRect(
+            p.x * CELL_SIZE + PIXEL_OFFSET, 
+            p.y * CELL_SIZE + PIXEL_OFFSET, 
+            PIXEL_SIZE, 
+            PIXEL_SIZE
+        );
     });
     
-    // ЧЁРНАЯ СЕТКА поверх (только при зуме)
-    if (showGrid) {
-        ctx.fillStyle = '#000000';
-        for (let i = 1; i < 100; i++) {
-            // Вертикальные линии (1px, точно между пикселями)
-            ctx.fillRect(i * CELL_SIZE - 0.5, 0, 1, CANVAS_SIZE);
-            // Горизонтальные линии
-            ctx.fillRect(0, i * CELL_SIZE - 0.5, CANVAS_SIZE, 1);
-        }
+    // 3. Сетка (2px, строго в зазоре между пикселями)
+    ctx.fillStyle = '#000000';
+    for (let i = 1; i < 100; i++) {
+        // Вертикальная линия (зазор между пикселями i-1 и i)
+        ctx.fillRect(i * CELL_SIZE - 1, 0, 2, CANVAS_SIZE);
+        // Горизонтальная линия
+        ctx.fillRect(0, i * CELL_SIZE - 1, CANVAS_SIZE, 2);
     }
 }
 
@@ -488,15 +489,62 @@ async function fetchAndDrawPixels() {
     redrawCanvas();
 }
 
-async function resetCanvas() {
-    tg.showConfirm("Точно очистить ВЕСЬ холст?", async (ok) => {
-        if (!ok) return;
-        const res = await postAPI('pixel/reset', {});
-        if (!res.ok) return tg.showAlert(res.data.error || "Ошибка");
-        tg.showAlert("Холст очищен!");
+// Сброс холста (двойной клик)
+let resetConfirmPending = false;
+let resetTimeout = null;
+
+async function resetCanvas(event) {
+    const btn = event.target;
+    
+    if (!resetConfirmPending) {
+        resetConfirmPending = true;
+        btn.innerText = "⚠️ Нажми ещё раз";
+        btn.style.background = '#ff8c00';
+        
+        clearTimeout(resetTimeout);
+        resetTimeout = setTimeout(() => {
+            resetConfirmPending = false;
+            btn.innerText = "🗑 Сбросить холст";
+            btn.style.background = '#ff4a4a';
+        }, 3000);
+        return;
+    }
+    
+    clearTimeout(resetTimeout);
+    resetConfirmPending = false;
+    btn.innerText = "Сброс...";
+    btn.disabled = true;
+    btn.style.background = '#ff4a4a';
+    
+    try {
+        const response = await fetch('/api/pixel/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: tg.initData })
+        });
+        
+        const text = await response.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            throw new Error(`Сервер вернул: ${text.substring(0, 100)}`);
+        }
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Ошибка сервера');
+        }
+        
+        tg.showAlert("✅ Холст очищен!");
         cachedPixels = [];
         redrawCanvas();
-    });
+    } catch (e) {
+        tg.showAlert("❌ " + e.message);
+    } finally {
+        btn.innerText = "🗑 Сбросить холст";
+        btn.disabled = false;
+        btn.style.background = '#ff4a4a';
+    }
 }
 
 async function loadHistory() {
