@@ -183,6 +183,7 @@ async function loadTop() {
 }
 
 async function loadShop() {}
+
 async function playCasino() {
     const chatId = document.getElementById('shop-chat-select').value;
     const betStr = document.getElementById('casino-bet').value;
@@ -343,4 +344,252 @@ const PIXEL_SIZE = 7;
 
 let canvas, ctx, zoomContainer;
 let isPixelInitialized = false;
-let currentColor = "#FF3B30
+let currentColor = "#FF3B30";
+let cachedPixels = [];
+let currentZoomScale = 1;
+
+const COLORS = [
+    "#FFFFFF", "#000000", "#808080", "#C0C0C0",
+    "#FF0000", "#FF4500", "#FF8C00", "#FFFF00",
+    "#008000", "#00FF00", "#32CD32", "#00FA9A",
+    "#00FFFF", "#0000FF", "#000080", "#8A2BE2",
+    "#FF00FF", "#FF1493", "#A52A2A", "#D2691E"
+];
+
+async function initPixelBattle() {
+    if (isPixelInitialized) {
+        fetchAndDrawPixels();
+        return;
+    }
+    
+    canvas = document.getElementById('pixel-canvas');
+    ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    zoomContainer = document.getElementById('zoom-container');
+    
+    const palette = document.getElementById('color-palette');
+    palette.innerHTML = '';
+    COLORS.forEach(color => {
+        const div = document.createElement('div');
+        div.className = 'color-swatch';
+        div.style.backgroundColor = color;
+        if (color === currentColor) div.classList.add('selected');
+        div.onclick = () => {
+            document.querySelectorAll('.color-swatch').forEach(el => el.classList.remove('selected'));
+            div.classList.add('selected');
+            currentColor = color;
+        };
+        palette.appendChild(div);
+    });
+
+    let initialDistance = 0;
+    let initialWidth = 300; // Стартовая визуальная ширина
+
+    zoomContainer.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            initialDistance = Math.hypot(
+                e.touches[0].pageX - e.touches[1].pageX,
+                e.touches[0].pageY - e.touches[1].pageY
+            );
+            initialWidth = canvas.clientWidth;
+        }
+    }, { passive: false });
+
+    zoomContainer.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            const currentDistance = Math.hypot(
+                e.touches[0].pageX - e.touches[1].pageX,
+                e.touches[0].pageY - e.touches[1].pageY
+            );
+            
+            let newWidth = initialWidth * (currentDistance / initialDistance);
+            newWidth = Math.max(300, Math.min(1200, newWidth));
+            
+            canvas.style.width = newWidth + 'px';
+            canvas.style.height = newWidth + 'px';
+            
+            currentZoomScale = newWidth / 300;
+        }
+    }, { passive: false });
+
+    canvas.addEventListener('click', async (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) / rect.width * GRID_SIZE);
+        const y = Math.floor((e.clientY - rect.top) / rect.height * GRID_SIZE);
+        
+        if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+            ctx.fillStyle = currentColor;
+            ctx.fillRect(x * CELL_SIZE + 1, y * CELL_SIZE + 1, PIXEL_SIZE - 1, PIXEL_SIZE - 1);
+            
+            await postAPI('pixel/set', { x, y, color: currentColor });
+        }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) / rect.width * GRID_SIZE);
+        const y = Math.floor((e.clientY - rect.top) / rect.height * GRID_SIZE);
+        document.getElementById('pixel-coords').innerText = `X: ${x}, Y: ${y}`;
+    });
+    
+    canvas.addEventListener('mouseleave', () => {
+        document.getElementById('pixel-coords').innerText = "Наведи на поле";
+    });
+
+    isPixelInitialized = true;
+    fetchAndDrawPixels();
+    setInterval(fetchAndDrawPixels, 3000);
+}
+
+function redrawCanvas() {
+    if (!isPixelInitialized) return;
+    
+    // 1. Белый фон
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    
+    // 2. Пиксели
+    cachedPixels.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x * CELL_SIZE + 1, p.y * CELL_SIZE + 1, PIXEL_SIZE - 1, PIXEL_SIZE - 1);
+    });
+    
+    // 3. Сетка (2px)
+    ctx.fillStyle = '#000000';
+    for (let i = 1; i < GRID_SIZE; i++) {
+        ctx.fillRect(i * CELL_SIZE - 1, 0, 2, CANVAS_SIZE);
+        ctx.fillRect(0, i * CELL_SIZE - 1, CANVAS_SIZE, 2);
+    }
+}
+
+async function fetchAndDrawPixels() {
+    if (!isPixelInitialized) return;
+    const data = await fetchAPI('pixel/get');
+    if (!data || !data.pixels) return;
+    
+    cachedPixels = data.pixels;
+    redrawCanvas();
+}
+
+let resetConfirmPending = false;
+let resetTimeout = null;
+
+async function resetCanvas(event) {
+    const btn = event.target;
+    
+    if (!resetConfirmPending) {
+        resetConfirmPending = true;
+        btn.innerText = "⚠️ Нажми ещё раз";
+        btn.style.background = '#ff8c00';
+        
+        clearTimeout(resetTimeout);
+        resetTimeout = setTimeout(() => {
+            resetConfirmPending = false;
+            btn.innerText = "🗑 Сбросить холст";
+            btn.style.background = '#ff4a4a';
+        }, 3000);
+        return;
+    }
+    
+    clearTimeout(resetTimeout);
+    resetConfirmPending = false;
+    btn.innerText = "Сброс...";
+    btn.disabled = true;
+    btn.style.background = '#ff4a4a';
+    
+    try {
+        const response = await fetch('/api/pixel/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: tg.initData })
+        });
+        
+        const text = await response.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            throw new Error(`Сервер вернул: ${text.substring(0, 100)}`);
+        }
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Ошибка сервера');
+        }
+        
+        tg.showAlert("✅ Холст очищен!");
+        cachedPixels = [];
+        redrawCanvas();
+    } catch (e) {
+        tg.showAlert("❌ " + e.message);
+    } finally {
+        btn.innerText = "🗑 Сбросить холст";
+        btn.disabled = false;
+        btn.style.background = '#ff4a4a';
+    }
+}
+
+async function loadHistory() {
+    const select = document.getElementById('history-chat-select');
+    const historyList = document.getElementById('history-list');
+    const chatId = select.value;
+    const params = chatId ? `&chat_id=${chatId}` : '';
+    
+    historyList.innerHTML = '<div class="loading">Загрузка...</div>';
+    const data = await fetchAPI('history', params);
+    historyList.innerHTML = '';
+
+    if (!data || !data.history || !data.history.length) {
+        historyList.innerHTML = '<div class="loading">История пуста</div>';
+        return;
+    }
+
+    data.history.forEach(item => {
+        let title = '';
+        let amountStr = item.amount > 0 ? `+${item.amount}` : `${item.amount}`;
+        let amountClass = item.amount > 0 ? 'positive' : 'negative';
+        
+        if (item.type === 'reaction_earn') {
+            title = chatId ? `${item.sender_name} ➔ ${item.receiver_name}` : `Реакция от ${item.sender_name || 'Кто-то'}`;
+        } else if (item.type === 'channel_earn') {
+            title = `Забрал балл в канале`;
+        } else if (item.type === 'fine') {
+            title = `Штраф за накрутку`;
+        } else if (item.type === 'referral') {
+            title = `Бонус за друга`;
+        } else if (item.type === 'casino_win') {
+            title = `🎰 Выигрыш в казино`;
+        } else if (item.type === 'casino_bet') {
+            title = `🎰 Ставка в казино`;
+        } else if (item.type === 'shop_post') {
+            title = `📢 Пост в канале`;
+        } else if (item.type === 'prediction_bet') {
+            title = `📈 Ставка на событие`;
+        } else if (item.type === 'prediction_win') {
+            title = `🏆 Выигрыш по ставке`;
+        } else {
+            title = `${item.type}`;
+        }
+
+        if (!chatId && item.chat_title) title = `[${item.chat_title}] ` + title;
+
+        const div = document.createElement('div');
+        div.className = 'list-item';
+        div.style.flexDirection = 'column';
+        div.style.alignItems = 'flex-start';
+        
+        const msgTextHtml = item.message_text ? `<div class="subtitle">${item.message_text}</div>` : '';
+        
+        div.innerHTML = `
+            <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+                <div class="title">${title}</div>
+                <div class="amount ${amountClass}">${amountStr}</div>
+            </div>
+            ${msgTextHtml}
+        `;
+        historyList.appendChild(div);
+    });
+}
+
+loadBalance();
