@@ -1061,6 +1061,20 @@ async def api_pixel_set(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def api_pixel_reset(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
+        
+        async with db_pool.acquire() as conn:
+            await conn.execute('DELETE FROM pixel_battle')
+            
+        return web.json_response({"result": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def api_history(request):
     init_data = request.query.get("initData")
     if not init_data: return web.json_response({"error": "No initData"}, status=401)
@@ -1146,6 +1160,7 @@ async def start_web_server():
 
     app.router.add_get('/api/pixel/get', api_pixel_get)
     app.router.add_post('/api/pixel/set', api_pixel_set)
+    app.router.add_post('/api/pixel/reset', api_pixel_reset)
     
     app.router.add_get('/webapp', serve_index)
     app.router.add_get('/webapp/', serve_index)
