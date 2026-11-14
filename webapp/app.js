@@ -42,6 +42,7 @@ function switchTab(tabName) {
     if (tabName === 'history') loadHistory();
     if (tabName === 'top') loadTop();
     if (tabName === 'bets') loadBets();
+    if (tabName === 'pixel') initPixelBattle();
 }
 
 async function loadBalance() {
@@ -175,13 +176,7 @@ async function loadTop() {
     }
 }
 
-async function loadShop() {
-    const select = document.getElementById('shop-chat-select');
-    if (!select.value) {
-        // Просто визуальное предупреждение
-    }
-}
-
+async function loadShop() {}
 async function playCasino() {
     const chatId = document.getElementById('shop-chat-select').value;
     const betStr = document.getElementById('casino-bet').value;
@@ -195,21 +190,12 @@ async function playCasino() {
     btn.disabled = true;
 
     const res = await postAPI('shop/casino', { chat_id: chatId, bet: bet });
-    
     btn.innerText = "Крутить";
     btn.disabled = false;
 
-    if (!res.ok) {
-        tg.showAlert(res.data.error || "Ошибка");
-        return;
-    }
-
-    if (res.data.result === 'win') {
-        tg.showAlert(`🎉 Ты выиграл ${res.data.amount} баллов!`);
-    } else {
-        tg.showAlert(`💸 Ты проиграл ${res.data.amount} баллов.`);
-    }
-    
+    if (!res.ok) return tg.showAlert(res.data.error || "Ошибка");
+    if (res.data.result === 'win') tg.showAlert(`🎉 Ты выиграл ${res.data.amount} баллов!`);
+    else tg.showAlert(`💸 Ты проиграл ${res.data.amount} баллов.`);
     loadBalance(); 
 }
 
@@ -226,21 +212,15 @@ async function sendPost() {
     btn.disabled = true;
 
     const res = await postAPI('shop/post', { chat_id: chatId, text: text, is_anonymous: isAnon });
-    
     btn.innerText = "Опубликовать";
     btn.disabled = false;
 
-    if (!res.ok) {
-        tg.showAlert(res.data.error || "Ошибка");
-        return;
-    }
-
+    if (!res.ok) return tg.showAlert(res.data.error || "Ошибка");
     tg.showAlert("✅ Сообщение опубликовано!");
     document.getElementById('post-text').value = '';
     loadBalance(); 
 }
 
-// ================== СТАВКИ ==================
 async function loadBets() {
     const select = document.getElementById('bets-chat-select');
     const chatId = select.value;
@@ -256,10 +236,7 @@ async function loadBets() {
     betsList.innerHTML = '<div class="loading">Загрузка...</div>';
     const data = await fetchAPI('predictions', `&chat_id=${chatId}`);
     
-    if (!data) {
-        betsList.innerHTML = '<div class="loading">Ошибка</div>';
-        return;
-    }
+    if (!data) { betsList.innerHTML = '<div class="loading">Ошибка</div>'; return; }
 
     adminPanel.style.display = data.is_admin ? 'block' : 'none';
     betsList.innerHTML = data.predictions.length ? '' : '<div class="loading">Нет активных ставок</div>';
@@ -277,40 +254,32 @@ async function loadBets() {
         
         let statusBadge = "";
         if (pred.status === 'active') statusBadge = `<span style="color: var(--button-color);">${timeLeftStr}</span>`;
-        else if (pred.status === 'canceled') statusBadge = `<span style="color: var(--hint-color);">Отменено (нет победителей)</span>`;
+        else if (pred.status === 'canceled') statusBadge = `<span style="color: var(--hint-color);">Отменено</span>`;
         else if (pred.status === 'resolved_yes') statusBadge = `<span style="color: #4cd964;">Итог: ДА</span>`;
         else if (pred.status === 'resolved_no') statusBadge = `<span style="color: #ff4a4a;">Итог: НЕТ</span>`;
 
         let userBetHtml = "";
-        if (pred.user_bet) {
-            userBetHtml = `<div style="font-size: 13px; color: var(--hint-color); margin-bottom: 8px;">Твоя ставка: ${pred.user_bet.amount} на ${pred.user_bet.choice === 'yes' ? 'ДА' : 'НЕТ'}</div>`;
-        }
+        if (pred.user_bet) userBetHtml = `<div style="font-size: 13px; color: var(--hint-color); margin-bottom: 8px;">Твоя ставка: ${pred.user_bet.amount} на ${pred.user_bet.choice === 'yes' ? 'ДА' : 'НЕТ'}</div>`;
 
         let actionHtml = "";
         if (pred.status === 'active' && !isEnded) {
             if (data.is_admin) {
-                actionHtml = `
-                    <div style="display: flex; gap: 10px; margin-top: 10px;">
-                        <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="resolveBet(${pred.id}, 'yes')">Исход: ДА</button>
-                        <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="resolveBet(${pred.id}, 'no')">Исход: НЕТ</button>
-                    </div>
-                `;
+                actionHtml = `<div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="resolveBet(${pred.id}, 'yes')">Исход: ДА</button>
+                    <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="resolveBet(${pred.id}, 'no')">Исход: НЕТ</button>
+                </div>`;
             } else {
                 if (!pred.user_bet) {
-                    actionHtml = `
-                        <div style="display: flex; gap: 10px; margin-top: 10px;">
-                            <input type="number" id="bet-amt-${pred.id}" placeholder="Сумма" style="width: 80px; padding: 8px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
-                            <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="placeBet(${pred.id}, 'yes')">ДА</button>
-                            <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="placeBet(${pred.id}, 'no')">НЕТ</button>
-                        </div>
-                    `;
+                    actionHtml = `<div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <input type="number" id="bet-amt-${pred.id}" placeholder="Сумма" style="width: 80px; padding: 8px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
+                        <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="placeBet(${pred.id}, 'yes')">ДА</button>
+                        <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="placeBet(${pred.id}, 'no')">НЕТ</button>
+                    </div>`;
                 } else {
-                    actionHtml = `
-                        <div style="display: flex; gap: 10px; margin-top: 10px;">
-                            <input type="number" id="bet-amt-${pred.id}" placeholder="Докинуть" style="width: 80px; padding: 8px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
-                            <button class="tab-btn" style="flex:1; background: var(--button-color); color: white;" onclick="placeBet(${pred.id}, '${pred.user_bet.choice}')">Докинуть на ${pred.user_bet.choice === 'yes' ? 'ДА' : 'НЕТ'}</button>
-                        </div>
-                    `;
+                    actionHtml = `<div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <input type="number" id="bet-amt-${pred.id}" placeholder="Докинуть" style="width: 80px; padding: 8px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
+                        <button class="tab-btn" style="flex:1; background: var(--button-color); color: white;" onclick="placeBet(${pred.id}, '${pred.user_bet.choice}')">Докинуть на ${pred.user_bet.choice === 'yes' ? 'ДА' : 'НЕТ'}</button>
+                    </div>`;
                 }
             }
         }
@@ -330,19 +299,11 @@ async function createBet() {
     const chatId = document.getElementById('bets-chat-select').value;
     const question = document.getElementById('bet-question').value.trim();
     const hours = document.getElementById('bet-hours').value;
-
     if (!chatId) return tg.showAlert("Выбери чат!");
     if (!question) return tg.showAlert("Напиши вопрос!");
-
-    const btn = event.target;
-    btn.innerText = "...";
-    btn.disabled = true;
-
+    const btn = event.target; btn.innerText = "..."; btn.disabled = true;
     const res = await postAPI('predictions/create', { chat_id: chatId, question: question, hours: hours });
-    
-    btn.innerText = "Создать";
-    btn.disabled = false;
-
+    btn.innerText = "Создать"; btn.disabled = false;
     if (!res.ok) return tg.showAlert(res.data.error);
     document.getElementById('bet-question').value = '';
     loadBets();
@@ -352,18 +313,10 @@ async function placeBet(predId, choice) {
     const chatId = document.getElementById('bets-chat-select').value;
     const amountStr = document.getElementById(`bet-amt-${predId}`).value;
     const amount = parseInt(amountStr);
-
     if (!amount || amount <= 0) return tg.showAlert("Введи сумму!");
-
-    const btn = event.target;
-    btn.innerText = "...";
-    btn.disabled = true;
-
+    const btn = event.target; btn.innerText = "..."; btn.disabled = true;
     const res = await postAPI('predictions/bet', { chat_id: chatId, pred_id: predId, choice: choice, amount: amount });
-    
-    btn.innerText = choice === 'yes' ? "ДА" : "НЕТ";
-    btn.disabled = false;
-
+    btn.innerText = choice === 'yes' ? "ДА" : "НЕТ"; btn.disabled = false;
     if (!res.ok) return tg.showAlert(res.data.error);
     loadBets();
     loadBalance();
@@ -374,6 +327,106 @@ async function resolveBet(predId, outcome) {
     const res = await postAPI('predictions/resolve', { chat_id: chatId, pred_id: predId, outcome: outcome });
     if (!res.ok) return tg.showAlert(res.data.error);
     loadBets();
+}
+
+// ================== ПИКСЕЛЬ БАТЛ ==================
+let canvas, ctx;
+let isPixelInitialized = false;
+let currentColor = "#FF3B30"; // По умолчанию красный
+
+const COLORS = [
+    "#FF3B30", // Красный
+    "#FF9500", // Оранжевый
+    "#FFCC00", // Желтый
+    "#34C759", // Зеленый
+    "#5AC8FA", // Голубой
+    "#007AFF", // Синий
+    "#AF52DE", // Фиолетовый
+    "#FF2D55", // Розовый
+    "#FFFFFF", // Белый
+    "#000000"  // Черный
+];
+
+async function initPixelBattle() {
+    if (isPixelInitialized) {
+        fetchAndDrawPixels();
+        return;
+    }
+    
+    canvas = document.getElementById('pixel-canvas');
+    ctx = canvas.getContext('2d');
+    
+    // Настраиваем палитру
+    const palette = document.getElementById('color-palette');
+    palette.innerHTML = '';
+    COLORS.forEach(color => {
+        const div = document.createElement('div');
+        div.className = 'color-swatch';
+        div.style.backgroundColor = color;
+        if (color === currentColor) div.classList.add('selected');
+        div.onclick = () => {
+            document.querySelectorAll('.color-swatch').forEach(el => el.classList.remove('selected'));
+            div.classList.add('selected');
+            currentColor = color;
+        };
+        palette.appendChild(div);
+    });
+
+    // Обработка клика
+    canvas.addEventListener('click', async (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((e.clientY - rect.top) * scaleY);
+        
+        if (x >= 0 && x < 100 && y >= 0 && y < 100) {
+            // Оптимистичная отрисовка
+            drawPixel(x, y, currentColor);
+            
+            // Отправка на сервер
+            await postAPI('pixel/set', { x, y, color: currentColor });
+        }
+    });
+
+    // Обработка наведения
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((e.clientY - rect.top) * scaleY);
+        document.getElementById('pixel-coords').innerText = `Координаты: X: ${x}, Y: ${y}`;
+    });
+    
+    canvas.addEventListener('mouseleave', () => {
+        document.getElementById('pixel-coords').innerText = "Наведи на поле";
+    });
+
+    isPixelInitialized = true;
+    fetchAndDrawPixels();
+    // Обновляем каждые 3 секунды
+    setInterval(fetchAndDrawPixels, 3000);
+}
+
+function drawPixel(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, 1, 1);
+}
+
+async function fetchAndDrawPixels() {
+    if (!isPixelInitialized) return;
+    const data = await fetchAPI('pixel/get');
+    if (!data || !data.pixels) return;
+    
+    // Очищаем холст
+    ctx.clearRect(0, 0, 100, 100);
+    // Рисуем все пиксели из базы
+    data.pixels.forEach(p => {
+        drawPixel(p.x, p.y, p.color);
+    });
 }
 
 async function loadHistory() {
