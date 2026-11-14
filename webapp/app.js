@@ -11,18 +11,12 @@ let allMyChats = [];
 async function fetchAPI(endpoint, params = "") {
     try {
         if (!tg.initData) throw new Error('Нет initData');
-        // Увеличили таймаут до 15 секунд, чтобы сервер успел ответить
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000); 
         
-        const response = await fetch(`/api/${endpoint}?initData=${encodeURIComponent(tg.initData)}${params}`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        
+        const response = await fetch(`/api/${endpoint}?initData=${encodeURIComponent(tg.initData)}${params}`);
         if (!response.ok) throw new Error('Network error');
         return await response.json();
     } catch (error) {
         console.error("Ошибка API:", error);
-        tg.showAlert("Ошибка загрузки данных. Попробуй перезапустить.");
         return null;
     }
 }
@@ -37,16 +31,18 @@ function switchTab(tabName) {
 }
 
 async function loadBalance() {
+    const balancesList = document.getElementById('balances-list');
+    balancesList.innerHTML = '<div class="loading">Загрузка...</div>';
+    
     const data = await fetchAPI('balance');
     if (!data) {
-        document.getElementById('balances-list').innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки. Попробуй закрыть и открыть заново.</div>';
+        balancesList.innerHTML = '<div class="loading" style="color: #ff4a4a;">Ошибка загрузки данных. Попробуй закрыть и открыть заново.</div>';
         return;
     }
 
     document.getElementById('total-balance').innerText = data.total_balance;
     allMyChats = data.my_chats || [];
 
-    const balancesList = document.getElementById('balances-list');
     balancesList.innerHTML = data.balances.length ? '' : '<div class="loading">У тебя пока нет баллов</div>';
     data.balances.forEach(item => {
         const icon = item.chat_type === 'channel' ? '📢' : '💬';
