@@ -329,11 +329,12 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ (С ЗУМОМ) ==================
+// ================== ПИКСЕЛЬ БАТЛ (ЗУМ, ПАН, СЕТКА) ==================
 let canvas, ctx, zoomContainer;
 let isPixelInitialized = false;
 let currentColor = "#FF3B30";
-let wasZooming = false;
+let cachedPixels = [];
+let currentZoomScale = 1;
 
 const COLORS = [
     "#FFFFFF", "#000000", "#808080", "#C0C0C0", // Оттенки серого и базовые
@@ -371,65 +372,60 @@ async function initPixelBattle() {
 
     // === ЛОГИКА ЗУМА (ДВУМЯ ПАЛЬЦАМИ) ===
     let initialDistance = 0;
-    let currentScale = 1;
+    let initialWidth = 500;
 
     zoomContainer.addEventListener('touchstart', (e) => {
         if (e.touches.length === 2) {
-            wasZooming = true;
+            e.preventDefault();
             initialDistance = Math.hypot(
                 e.touches[0].pageX - e.touches[1].pageX,
                 e.touches[0].pageY - e.touches[1].pageY
             );
+            initialWidth = canvas.clientWidth;
         }
     }, { passive: false });
 
     zoomContainer.addEventListener('touchmove', (e) => {
         if (e.touches.length === 2) {
             e.preventDefault(); // Блокируем скролл страницы
-            wasZooming = true;
             const currentDistance = Math.hypot(
                 e.touches[0].pageX - e.touches[1].pageX,
                 e.touches[0].pageY - e.touches[1].pageY
             );
             
-            let newScale = currentScale * (currentDistance / initialDistance);
-            newScale = Math.min(Math.max(newScale, 1), 5); // Ограничиваем зум от 1 до 5
+            let newWidth = initialWidth * (currentDistance / initialDistance);
+            newWidth = Math.max(500, Math.min(2500, newWidth)); // Ограничиваем зум от 1x до 5x
             
-            canvas.style.transform = `scale(${newScale})`;
+            canvas.style.width = newWidth + 'px';
+            canvas.style.height = newWidth + 'px';
             
-            // Включаем сетку при увеличении
-            if (newScale > 1.5) {
-                canvas.classList.add('show-grid');
+            const newScale = newWidth / 500;
+            // Если перешли порог 1.5 - перерисовываем с сеткой или без
+            if ((newScale > 1.5 && currentZoomScale <= 1.5) || (newScale <= 1.5 && currentZoomScale > 1.5)) {
+                currentZoomScale = newScale;
+                redrawCanvas();
             } else {
-                canvas.classList.remove('show-grid');
+                currentZoomScale = newScale;
             }
         }
     }, { passive: false });
 
-    zoomContainer.addEventListener('touchend', (e) => {
-        if (e.touches.length < 2) {
-            initialDistance = 0;
-            // Считываем текущий масштаб из CSS (для следующего зума)
-            const transform = window.getComputedStyle(canvas).getPropertyValue('transform');
-            if (transform && transform !== 'none') {
-                const matrix = new DOMMatrix(transform);
-                currentScale = matrix.a; // Масштаб
-            }
-            setTimeout(() => { wasZooming = false; }, 100); // Задержка, чтобы клик не сработал после зума
-        }
-    });
-
     // === КЛИК ПО ХОЛСТУ ===
     canvas.addEventListener('click', async (e) => {
-        if (wasZooming) return; // Игнорируем клик, если только что зумили
-        
         const rect = canvas.getBoundingClientRect();
-        // Пересчитываем координаты с учетом масштаба (rect.width меняется при transform: scale)
+        // Пересчитываем координаты с учетом масштаба (rect.width меняется при изменении CSS width)
         const x = Math.floor((e.clientX - rect.left) / rect.width * 100);
         const y = Math.floor((e.clientY - rect.top) / rect.height * 100);
         
         if (x >= 0 && x < 100 && y >= 0 && y < 100) {
-            drawPixel(x, y, currentColor); // Оптимистичная отрисовка
+            // Оптимистичная отрисовка
+            ctx.fillStyle = currentColor;
+            if (currentZoomScale > 1.5) {
+                ctx.fillRect(x * 5 + 0.5, y * 5 + 0.5, 4, 4); // С зазором
+            } else {
+                ctx.fillRect(x * 5, y * 5, 5, 5); // Без зазора
+            }
+            
             await postAPI('pixel/set', { x, y, color: currentColor });
         }
     });
@@ -451,10 +447,23 @@ async function initPixelBattle() {
     setInterval(fetchAndDrawPixels, 3000);
 }
 
-function drawPixel(x, y, color) {
-    // 500 / 100 = 5 пикселей на ячейку
-    ctx.fillStyle = color;
-    ctx.fillRect(x * 5, y * 5, 5, 5); 
+function redrawCanvas() {
+    if (!isPixelInitialized) return;
+    const showGrid = currentZoomScale > 1.5;
+    
+    // Очищаем холст
+    ctx.clearRect(0, 0, 500, 500);
+    
+    cachedPixels.forEach(p => {
+        ctx.fillStyle = p.color;
+        if (showGrid) {
+            // Рисуем 4х4, оставляя 1 пиксель на сетку
+            ctx.fillRect(p.x * 5 + 0.5, p.y * 5 + 0.5, 4, 4);
+        } else {
+            // Рисуем 5х5 сплошным
+            ctx.fillRect(p.x * 5, p.y * 5, 5, 5);
+        }
+    });
 }
 
 async function fetchAndDrawPixels() {
@@ -462,11 +471,8 @@ async function fetchAndDrawPixels() {
     const data = await fetchAPI('pixel/get');
     if (!data || !data.pixels) return;
     
-    // Очищаем весь холст (500x500)
-    ctx.clearRect(0, 0, 500, 500);
-    data.pixels.forEach(p => {
-        drawPixel(p.x, p.y, p.color);
-    });
+    cachedPixels = data.pixels;
+    redrawCanvas();
 }
 
 async function loadHistory() {
