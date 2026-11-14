@@ -329,22 +329,18 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ ==================
-let canvas, ctx;
+// ================== ПИКСЕЛЬ БАТЛ (С ЗУМОМ) ==================
+let canvas, ctx, zoomContainer;
 let isPixelInitialized = false;
-let currentColor = "#FF3B30"; // По умолчанию красный
+let currentColor = "#FF3B30";
+let wasZooming = false;
 
 const COLORS = [
-    "#FF3B30", // Красный
-    "#FF9500", // Оранжевый
-    "#FFCC00", // Желтый
-    "#34C759", // Зеленый
-    "#5AC8FA", // Голубой
-    "#007AFF", // Синий
-    "#AF52DE", // Фиолетовый
-    "#FF2D55", // Розовый
-    "#FFFFFF", // Белый
-    "#000000"  // Черный
+    "#FFFFFF", "#000000", "#808080", "#C0C0C0", // Оттенки серого и базовые
+    "#FF0000", "#FF4500", "#FF8C00", "#FFFF00", // Красные, оранжевые, желтые
+    "#008000", "#00FF00", "#32CD32", "#00FA9A", // Зеленые
+    "#00FFFF", "#0000FF", "#000080", "#8A2BE2", // Голубые, синие, фиолетовые
+    "#FF00FF", "#FF1493", "#A52A2A", "#D2691E"  // Розовые, коричневые
 ];
 
 async function initPixelBattle() {
@@ -355,6 +351,7 @@ async function initPixelBattle() {
     
     canvas = document.getElementById('pixel-canvas');
     ctx = canvas.getContext('2d');
+    zoomContainer = document.getElementById('zoom-container');
     
     // Настраиваем палитру
     const palette = document.getElementById('color-palette');
@@ -372,33 +369,77 @@ async function initPixelBattle() {
         palette.appendChild(div);
     });
 
-    // Обработка клика
+    // === ЛОГИКА ЗУМА (ДВУМЯ ПАЛЬЦАМИ) ===
+    let initialDistance = 0;
+    let currentScale = 1;
+
+    zoomContainer.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            wasZooming = true;
+            initialDistance = Math.hypot(
+                e.touches[0].pageX - e.touches[1].pageX,
+                e.touches[0].pageY - e.touches[1].pageY
+            );
+        }
+    }, { passive: false });
+
+    zoomContainer.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2) {
+            e.preventDefault(); // Блокируем скролл страницы
+            wasZooming = true;
+            const currentDistance = Math.hypot(
+                e.touches[0].pageX - e.touches[1].pageX,
+                e.touches[0].pageY - e.touches[1].pageY
+            );
+            
+            let newScale = currentScale * (currentDistance / initialDistance);
+            newScale = Math.min(Math.max(newScale, 1), 5); // Ограничиваем зум от 1 до 5
+            
+            canvas.style.transform = `scale(${newScale})`;
+            
+            // Включаем сетку при увеличении
+            if (newScale > 1.5) {
+                canvas.classList.add('show-grid');
+            } else {
+                canvas.classList.remove('show-grid');
+            }
+        }
+    }, { passive: false });
+
+    zoomContainer.addEventListener('touchend', (e) => {
+        if (e.touches.length < 2) {
+            initialDistance = 0;
+            // Считываем текущий масштаб из CSS (для следующего зума)
+            const transform = window.getComputedStyle(canvas).getPropertyValue('transform');
+            if (transform && transform !== 'none') {
+                const matrix = new DOMMatrix(transform);
+                currentScale = matrix.a; // Масштаб
+            }
+            setTimeout(() => { wasZooming = false; }, 100); // Задержка, чтобы клик не сработал после зума
+        }
+    });
+
+    // === КЛИК ПО ХОЛСТУ ===
     canvas.addEventListener('click', async (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
+        if (wasZooming) return; // Игнорируем клик, если только что зумили
         
-        const x = Math.floor((e.clientX - rect.left) * scaleX);
-        const y = Math.floor((e.clientY - rect.top) * scaleY);
+        const rect = canvas.getBoundingClientRect();
+        // Пересчитываем координаты с учетом масштаба (rect.width меняется при transform: scale)
+        const x = Math.floor((e.clientX - rect.left) / rect.width * 100);
+        const y = Math.floor((e.clientY - rect.top) / rect.height * 100);
         
         if (x >= 0 && x < 100 && y >= 0 && y < 100) {
-            // Оптимистичная отрисовка
-            drawPixel(x, y, currentColor);
-            
-            // Отправка на сервер
+            drawPixel(x, y, currentColor); // Оптимистичная отрисовка
             await postAPI('pixel/set', { x, y, color: currentColor });
         }
     });
 
-    // Обработка наведения
+    // Координаты при наведении (для десктопа)
     canvas.addEventListener('mousemove', (e) => {
         const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        
-        const x = Math.floor((e.clientX - rect.left) * scaleX);
-        const y = Math.floor((e.clientY - rect.top) * scaleY);
-        document.getElementById('pixel-coords').innerText = `Координаты: X: ${x}, Y: ${y}`;
+        const x = Math.floor((e.clientX - rect.left) / rect.width * 100);
+        const y = Math.floor((e.clientY - rect.top) / rect.height * 100);
+        document.getElementById('pixel-coords').innerText = `X: ${x}, Y: ${y}`;
     });
     
     canvas.addEventListener('mouseleave', () => {
@@ -407,13 +448,13 @@ async function initPixelBattle() {
 
     isPixelInitialized = true;
     fetchAndDrawPixels();
-    // Обновляем каждые 3 секунды
     setInterval(fetchAndDrawPixels, 3000);
 }
 
 function drawPixel(x, y, color) {
+    // 500 / 100 = 5 пикселей на ячейку
     ctx.fillStyle = color;
-    ctx.fillRect(x, y, 1, 1);
+    ctx.fillRect(x * 5, y * 5, 5, 5); 
 }
 
 async function fetchAndDrawPixels() {
@@ -421,9 +462,8 @@ async function fetchAndDrawPixels() {
     const data = await fetchAPI('pixel/get');
     if (!data || !data.pixels) return;
     
-    // Очищаем холст
-    ctx.clearRect(0, 0, 100, 100);
-    // Рисуем все пиксели из базы
+    // Очищаем весь холст (500x500)
+    ctx.clearRect(0, 0, 500, 500);
     data.pixels.forEach(p => {
         drawPixel(p.x, p.y, p.color);
     });
