@@ -155,7 +155,6 @@ async def init_db():
                     );
                 ''')
 
-                # --- ТАБЛИЦЫ ДЛЯ СТАВОК ---
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS predictions (
                         id SERIAL PRIMARY KEY,
@@ -179,7 +178,6 @@ async def init_db():
                     );
                 ''')
 
-                # --- ТАБЛИЦА ДЛЯ ПИКСЕЛЬ БАТЛА ---
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS pixel_battle (
                         x INTEGER NOT NULL,
@@ -1024,7 +1022,6 @@ async def api_predictions_resolve(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-# ================== API ПИКСЕЛЬ БАТЛ ==================
 async def api_pixel_get(request):
     try:
         init_data = request.query.get("initData")
