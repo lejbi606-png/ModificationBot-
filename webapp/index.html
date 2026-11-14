@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
     <div class="container">
@@ -22,60 +22,31 @@
             <button class="tab-btn" onclick="switchTab('history')">История</button>
         </div>
 
+        <!-- ... остальные вкладки (баланс, топ, магазин, ставки, история) без изменений ... -->
         <div id="tab-balance" class="tab-content active">
             <div class="total-balance-card">
                 <span class="label">Общий баланс</span>
                 <span class="value" id="total-balance">0</span>
                 <span class="currency">баллов</span>
             </div>
-
-            <section class="balances-section">
-                <h2>Где ты заработал</h2>
-                <div id="balances-list" class="list">
-                    <div class="loading">Загрузка...</div>
-                </div>
-            </section>
-
-            <section class="ref-section">
-                <h2>🔗 Пригласи друга</h2>
-                <div id="ref-list" class="list">
-                    <div class="loading">Загрузка...</div>
-                </div>
-            </section>
+            <section class="balances-section"><h2>Где ты заработал</h2><div id="balances-list" class="list"><div class="loading">Загрузка...</div></div></section>
+            <section class="ref-section"><h2>🔗 Пригласи друга</h2><div id="ref-list" class="list"><div class="loading">Загрузка...</div></div></section>
         </div>
 
         <div id="tab-top" class="tab-content">
             <section class="history-section">
-                <div class="history-controls">
-                    <select id="top-chat-select" onchange="loadTop()">
-                        <option value="">Выбери чат...</option>
-                    </select>
-                </div>
-                <div id="top-list" class="list">
-                    <div class="loading">Загрузка...</div>
-                </div>
-                
+                <div class="history-controls"><select id="top-chat-select" onchange="loadTop()"><option value="">Выбери чат...</option></select></div>
+                <div id="top-list" class="list"><div class="loading">Загрузка...</div></div>
                 <div id="you-plate" class="you-plate" style="display: none;">
-                    <div class="you-left">
-                        <span class="you-rank" id="you-rank">#?</span>
-                        <span class="you-name" id="you-name">Ты</span>
-                    </div>
-                    <div class="you-right">
-                        <span class="you-balance" id="you-balance">0</span>
-                        <span class="you-hint" id="you-hint">до Топ-5: 0</span>
-                    </div>
+                    <div class="you-left"><span class="you-rank" id="you-rank">#?</span><span class="you-name" id="you-name">Ты</span></div>
+                    <div class="you-right"><span class="you-balance" id="you-balance">0</span><span class="you-hint" id="you-hint">до Топ-5: 0</span></div>
                 </div>
             </section>
         </div>
 
         <div id="tab-shop" class="tab-content">
             <section class="shop-section">
-                <div class="history-controls">
-                    <select id="shop-chat-select" onchange="loadShop()">
-                        <option value="">Выбери чат для списания...</option>
-                    </select>
-                </div>
-
+                <div class="history-controls"><select id="shop-chat-select" onchange="loadShop()"><option value="">Выбери чат для списания...</option></select></div>
                 <div class="shop-card">
                     <h2>🎰 Казино</h2>
                     <p style="color: var(--hint-color); font-size: 14px; margin-bottom: 10px;">Шанс 50/50. Удвой ставку или проиграй.</p>
@@ -84,13 +55,10 @@
                         <button class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="playCasino()">Крутить</button>
                     </div>
                 </div>
-
                 <div class="shop-card">
                     <h2>📢 Пост в ТГК (20 баллов)</h2>
                     <textarea id="post-text" placeholder="Текст сообщения..." rows="3" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px; resize: none;"></textarea>
-                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);">
-                        <input type="checkbox" id="post-anon"> Отправить анонимно
-                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);"><input type="checkbox" id="post-anon"> Отправить анонимно</label>
                     <button class="tab-btn" style="width: 100%; background: var(--button-color); color: white;" onclick="sendPost()">Опубликовать</button>
                 </div>
             </section>
@@ -98,12 +66,7 @@
 
         <div id="tab-bets" class="tab-content">
             <section class="bets-section">
-                <div class="history-controls">
-                    <select id="bets-chat-select" onchange="loadBets()">
-                        <option value="">Выбери чат...</option>
-                    </select>
-                </div>
-                
+                <div class="history-controls"><select id="bets-chat-select" onchange="loadBets()"><option value="">Выбери чат...</option></select></div>
                 <div id="admin-bets-panel" class="shop-card" style="display: none;">
                     <h2>Создать событие</h2>
                     <input type="text" id="bet-question" placeholder="Вопрос (например: Выиграем?)" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px;">
@@ -112,13 +75,11 @@
                         <button class="tab-btn" style="flex: 1; background: var(--button-color); color: white;" onclick="createBet()">Создать</button>
                     </div>
                 </div>
-
-                <div id="bets-list" class="list">
-                    <div class="loading">Загрузка...</div>
-                </div>
+                <div id="bets-list" class="list"><div class="loading">Загрузка...</div></div>
             </section>
         </div>
 
+        <!-- ВКЛАДКА ПИКСЕЛЬ -->
         <div id="tab-pixel" class="tab-content">
             <section class="pixel-section">
                 <h2>👾 Пиксель Батл</h2>
@@ -128,7 +89,8 @@
 
                 <button id="reset-btn" class="tab-btn" style="width: 100%; background: #ff4a4a; color: white; margin-bottom: 10px;" onclick="resetCanvas(event)">🗑 Сбросить холст</button>
 
-                <div id="zoom-container" class="zoom-container">
+                <!-- Контейнер для холста (зум и пан) -->
+                <div id="pixel-viewport" class="pixel-viewport">
                     <canvas id="pixel-canvas" width="800" height="800"></canvas>
                 </div>
                 
@@ -138,17 +100,11 @@
 
         <div id="tab-history" class="tab-content">
             <section class="history-section">
-                <div class="history-controls">
-                    <select id="history-chat-select" onchange="loadHistory()">
-                        <option value="">Моя общая история</option>
-                    </select>
-                </div>
-                <div id="history-list" class="list">
-                    <div class="loading">Загрузка...</div>
-                </div>
+                <div class="history-controls"><select id="history-chat-select" onchange="loadHistory()"><option value="">Моя общая история</option></select></div>
+                <div id="history-list" class="list"><div class="loading">Загрузка...</div></div>
             </section>
         </div>
     </div>
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=16"></script>
 </body>
 </html>
