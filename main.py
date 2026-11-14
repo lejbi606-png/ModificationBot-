@@ -155,7 +155,7 @@ async def init_db():
                     );
                 ''')
 
-                # --- ТАБЛИЦЫ ДЛЯ СТАВОК (PREDICTIONS) ---
+                # --- ТАБЛИЦЫ ДЛЯ СТАВОК ---
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS predictions (
                         id SERIAL PRIMARY KEY,
@@ -176,6 +176,16 @@ async def init_db():
                         amount BIGINT DEFAULT 0,
                         choice TEXT NOT NULL,
                         UNIQUE (prediction_id, user_id)
+                    );
+                ''')
+
+                # --- ТАБЛИЦА ДЛЯ ПИКСЕЛЬ БАТЛА ---
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS pixel_battle (
+                        x INTEGER NOT NULL,
+                        y INTEGER NOT NULL,
+                        color TEXT NOT NULL,
+                        PRIMARY KEY (x, y)
                     );
                 ''')
                 
@@ -770,7 +780,6 @@ async def api_top(request):
         })
 
 
-# ================== API МАГАЗИНА ==================
 async def api_shop_casino(request):
     try:
         data = await request.json()
@@ -823,7 +832,7 @@ async def api_shop_post(request):
         user_id = user_data.get("id")
         user_name = user_data.get("first_name", "User")
         
-        cost = 20 # Стоимость поста
+        cost = 20 
         
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -852,7 +861,6 @@ async def api_shop_post(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-# ================== API СТАВОК (PREDICTIONS) ==================
 async def api_predictions_list(request):
     try:
         init_data = request.query.get("initData")
@@ -924,7 +932,7 @@ async def api_predictions_bet(request):
         init_data = data.get("initData")
         chat_id = int(data.get("chat_id"))
         pred_id = int(data.get("pred_id"))
-        choice = data.get("choice") # 'yes' or 'no'
+        choice = data.get("choice")
         amount = int(data.get("amount"))
         
         if amount <= 0: return web.json_response({"error": "Ставка должна быть > 0"}, status=400)
@@ -942,28 +950,23 @@ async def api_predictions_bet(request):
                 if datetime.now() > pred['end_time'].replace(tzinfo=None):
                     return web.json_response({"error": "Время ставок истекло!"}, status=400)
                 
-                # Проверка баланса
                 bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
                 current_bal = bal_row['balance'] if bal_row else 0
                 if current_bal < amount:
                     return web.json_response({"error": "Недостаточно баллов"}, status=400)
                 
-                # Проверка существующей ставки
                 existing_bet = await conn.fetchrow('SELECT choice FROM prediction_bets WHERE prediction_id = $1 AND user_id = $2', pred_id, user_id)
                 if existing_bet and existing_bet['choice'] != choice:
                     return web.json_response({"error": "Ты уже ставил на другой исход!"}, status=400)
                 
-                # Списание
                 await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', amount, chat_id, user_id)
                 await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, $3, 'prediction_bet', $4)", chat_id, user_id, -amount, f"Ставка на {choice}")
                 
-                # Запись ставки
                 if existing_bet:
                     await conn.execute('UPDATE prediction_bets SET amount = amount + $1 WHERE prediction_id = $2 AND user_id = $3', amount, pred_id, user_id)
                 else:
                     await conn.execute('INSERT INTO prediction_bets (prediction_id, user_id, amount, choice) VALUES ($1, $2, $3, $4)', pred_id, user_id, amount, choice)
                 
-                # Обновление пула
                 if choice == 'yes':
                     await conn.execute('UPDATE predictions SET pool_yes = pool_yes + $1 WHERE id = $2', amount, pred_id)
                 else:
@@ -980,7 +983,7 @@ async def api_predictions_resolve(request):
         init_data = data.get("initData")
         chat_id = int(data.get("chat_id"))
         pred_id = int(data.get("pred_id"))
-        outcome = data.get("outcome") # 'yes' or 'no'
+        outcome = data.get("outcome")
         
         user_data = validate_init_data(init_data)
         if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
@@ -1001,17 +1004,14 @@ async def api_predictions_resolve(request):
                 total_pool = pool_yes + pool_no
                 
                 win_pool = pool_yes if outcome == 'yes' else pool_no
-                lose_pool = pool_no if outcome == 'yes' else pool_yes
                 
                 if win_pool == 0:
-                    # Возврат всем (нет победителей)
                     bets = await conn.fetch('SELECT user_id, amount FROM prediction_bets WHERE prediction_id = $1', pred_id)
                     for b in bets:
                         await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', b['amount'], chat_id, b['user_id'])
                     await conn.execute("UPDATE predictions SET status = 'canceled' WHERE id = $1", pred_id)
                     return web.json_response({"result": "canceled"})
                 
-                # Начисление выигрыша
                 winning_bets = await conn.fetch('SELECT user_id, amount FROM prediction_bets WHERE prediction_id = $1 AND choice = $2', pred_id, outcome)
                 for b in winning_bets:
                     payout = int((b['amount'] / win_pool) * total_pool)
@@ -1020,6 +1020,46 @@ async def api_predictions_resolve(request):
                 
                 await conn.execute("UPDATE predictions SET status = $1 WHERE id = $2", f"resolved_{outcome}", pred_id)
                 return web.json_response({"result": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ================== API ПИКСЕЛЬ БАТЛ ==================
+async def api_pixel_get(request):
+    try:
+        init_data = request.query.get("initData")
+        if not init_data: return web.json_response({"error": "No initData"}, status=401)
+        if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
+        
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch('SELECT x, y, color FROM pixel_battle')
+            
+        pixels = [{"x": r["x"], "y": r["y"], "color": r["color"]} for r in rows]
+        return web.json_response({"pixels": pixels})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_pixel_set(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        x = int(data.get("x"))
+        y = int(data.get("y"))
+        color = data.get("color")
+        
+        if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
+        
+        if x < 0 or x >= 100 or y < 0 or y >= 100:
+            return web.json_response({"error": "Координаты вне поля (100x100)"}, status=400)
+            
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO pixel_battle (x, y, color) VALUES ($1, $2, $3)
+                ON CONFLICT (x, y) DO UPDATE SET color = EXCLUDED.color
+            ''', x, y, color)
+            
+        return web.json_response({"result": "ok"})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -1106,6 +1146,9 @@ async def start_web_server():
     app.router.add_post('/api/predictions/create', api_predictions_create)
     app.router.add_post('/api/predictions/bet', api_predictions_bet)
     app.router.add_post('/api/predictions/resolve', api_predictions_resolve)
+
+    app.router.add_get('/api/pixel/get', api_pixel_get)
+    app.router.add_post('/api/pixel/set', api_pixel_set)
     
     app.router.add_get('/webapp', serve_index)
     app.router.add_get('/webapp/', serve_index)
