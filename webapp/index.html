@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
     <div class="container">
@@ -86,8 +86,20 @@
                 
                 <div id="color-palette" class="palette"></div>
 
+                <!-- Управление штампом -->
+                <div id="stamp-controls" class="shop-card" style="display: none; margin-bottom: 10px; border: 1px solid #4cd964;">
+                    <h2 style="font-size: 14px; color: white; text-transform: none; margin-bottom: 8px;">🖼 Штамп активен</h2>
+                    <p style="font-size: 12px; color: var(--hint-color); margin-bottom: 8px;">Двигай его 1 пальцем, меняй размер 2 пальцами.</p>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="tab-btn" style="flex:1; background: #4cd964; color: white;" onclick="applyStamp()">Поставить</button>
+                        <button class="tab-btn" style="flex:1; background: #ff4a4a; color: white;" onclick="cancelStamp()">Отмена</button>
+                    </div>
+                </div>
+
                 <div style="display: flex; gap: 10px; margin-bottom: 10px;">
                     <button id="reset-btn" class="tab-btn" style="flex: 1; background: #ff4a4a; color: white;" onclick="resetCanvas(event)">🗑 Сбросить</button>
+                    <button id="upload-stamp-btn" class="tab-btn" style="flex: 1; background: var(--button-color); color: white;" onclick="document.getElementById('stamp-input').click()">📁 Штамп</button>
+                    <input type="file" id="stamp-input" accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
                 </div>
 
                 <!-- Квадратный контейнер 500x500 пикселей (визуально) -->
@@ -106,6 +118,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=22"></script>
+    <script src="app.js?v=23"></script>
 </body>
 </html>
