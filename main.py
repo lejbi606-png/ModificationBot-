@@ -130,7 +130,6 @@ async def init_db():
                     );
                 ''')
                 await conn.execute('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS message_text TEXT')
-                
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
                 
@@ -142,7 +141,7 @@ async def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
-                # Очищаем старые ссылки (которые вели в бота)
+                # Очистка старых ссылок
                 await conn.execute("DELETE FROM referral_links WHERE invite_link LIKE '%start=%'")
                 
                 await conn.execute('''
@@ -156,7 +155,7 @@ async def init_db():
                     );
                 ''')
                 
-            print("✅ База данных готова. Мусорные ссылки удалены.")
+            print("✅ База данных готова.")
             return
         except Exception as e:
             print(f"❌ Ошибка БД (попытка {attempt}/5): {e}")
@@ -664,13 +663,17 @@ async def api_balance(request):
         ''', user_id)
         
         my_chats = []
-        seen_titles = set() # Защита от дублей с одинаковым названием
+        seen_titles = set() 
+        
         for r in my_chats_raw:
             title = r['title']
             if title in seen_titles:
                 continue
-                
+            seen_titles.add(title)
+            
             cid = r['chat_id']
+            link = None
+            
             try:
                 link_row = await conn.fetchrow('SELECT invite_link FROM referral_links WHERE chat_id = $1 AND referrer_id = $2 AND invite_link NOT LIKE \'%start=%\'', cid, user_id)
                 
@@ -681,17 +684,15 @@ async def api_balance(request):
                     link = inv.invite_link
                     await conn.execute('DELETE FROM referral_links WHERE chat_id = $1 AND referrer_id = $2', cid, user_id)
                     await conn.execute('INSERT INTO referral_links (invite_link, chat_id, referrer_id) VALUES ($1, $2, $3)', link, cid, user_id)
-                
-                seen_titles.add(title)
-                my_chats.append({
-                    "chat_id": cid,
-                    "title": title,
-                    "chat_type": r['chat_type'],
-                    "referral_link": link
-                })
             except Exception as e:
-                print(f"Пропускаем мертвый чат {cid} (нет прав или удален): {e}")
-                continue
+                print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
+            
+            my_chats.append({
+                "chat_id": cid,
+                "title": title,
+                "chat_type": r['chat_type'],
+                "referral_link": link
+            })
         
     return web.json_response({
         "user_id": user_id,
@@ -715,7 +716,6 @@ async def api_top(request):
     chat_id = int(chat_id_str)
     
     async with db_pool.acquire() as conn:
-        # Топ-10
         top_rows = await conn.fetch('''
             SELECT b.user_id, b.balance, u.first_name
             FROM balances b JOIN users u ON u.user_id = b.user_id
@@ -723,7 +723,6 @@ async def api_top(request):
             ORDER BY b.balance DESC LIMIT 10
         ''', chat_id)
         
-        # Инфа по юзеру
         user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
         user_bal = user_bal_row['balance'] if user_bal_row else 0
         
@@ -731,11 +730,9 @@ async def api_top(request):
         
         to_top10 = 0
         if len(top_rows) >= 10 and rank_row > 10:
-            # Сколько не хватает до 10-го места
             tenth_place_bal = top_rows[-1]['balance']
             to_top10 = (tenth_place_bal - user_bal) + 1
         elif len(top_rows) < 10 and rank_row > len(top_rows):
-             # Если в чате меньше 10 человек
              to_top10 = 1 
              
         return web.json_response({
