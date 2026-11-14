@@ -1047,8 +1047,9 @@ async def api_pixel_set(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         
-        if x < 0 or x >= 500 or y < 0 or y >= 500:
-            return web.json_response({"error": "Координаты вне поля (500x500)"}, status=400)
+        # ИЗМЕНЕНО: теперь 200x200
+        if x < 0 or x >= 200 or y < 0 or y >= 200:
+            return web.json_response({"error": "Координаты вне поля (200x200)"}, status=400)
             
         async with db_pool.acquire() as conn:
             await conn.execute('''
@@ -1069,7 +1070,7 @@ async def api_pixel_set_batch(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
-        if len(pixels) > 2500: return web.json_response({"error": "Слишком много пикселей (макс 2500)"}, status=400) # Ограничили 50х50
+        if len(pixels) > 40000: return web.json_response({"error": "Слишком много пикселей (макс 40000)"}, status=400)
             
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -1077,7 +1078,8 @@ async def api_pixel_set_batch(request):
                     px = int(p.get("x"))
                     py = int(p.get("y"))
                     pc = p.get("color")
-                    if 0 <= px < 500 and 0 <= py < 500 and pc:
+                    # ИЗМЕНЕНО: теперь 200x200
+                    if 0 <= px < 200 and 0 <= py < 200 and pc:
                         await conn.execute('''
                             INSERT INTO pixel_battle (x, y, color) VALUES ($1, $2, $3)
                             ON CONFLICT (x, y) DO UPDATE SET color = EXCLUDED.color
@@ -1171,7 +1173,8 @@ async def serve_index(request):
     return web.FileResponse(file_path)
 
 async def start_web_server():
-    app = web.Application()
+    # УВЕЛИЧЕН ЛИМИТ ДО 10 МБ
+    app = web.Application(client_max_size=1024**2 * 10)
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
@@ -1187,7 +1190,7 @@ async def start_web_server():
 
     app.router.add_get('/api/pixel/get', api_pixel_get)
     app.router.add_post('/api/pixel/set', api_pixel_set)
-    app.router.add_post('/api/pixel/set_batch', api_pixel_set_batch) # <--- ВОТ ЭТОЙ СТРОЧКИ НЕ ХВАТАЛО
+    app.router.add_post('/api/pixel/set_batch', api_pixel_set_batch)
     app.router.add_post('/api/pixel/reset', api_pixel_reset)
     
     app.router.add_get('/webapp', serve_index)
