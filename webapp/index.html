@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=23">
+    <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
     <div class="container">
@@ -86,7 +86,6 @@
                 
                 <div id="color-palette" class="palette"></div>
 
-                <!-- Управление штампом -->
                 <div id="stamp-controls" class="shop-card" style="display: none; margin-bottom: 10px; border: 1px solid #4cd964;">
                     <h2 style="font-size: 14px; color: white; text-transform: none; margin-bottom: 8px;">🖼 Штамп активен</h2>
                     <p style="font-size: 12px; color: var(--hint-color); margin-bottom: 8px;">Двигай его 1 пальцем, меняй размер 2 пальцами.</p>
@@ -102,7 +101,6 @@
                     <input type="file" id="stamp-input" accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
                 </div>
 
-                <!-- Квадратный контейнер 500x500 пикселей (визуально) -->
                 <div id="pixel-viewport" class="pixel-viewport">
                     <canvas id="pixel-canvas" width="2000" height="2000"></canvas>
                 </div>
@@ -118,6 +116,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=23"></script>
+    <script src="app.js?v=24"></script>
 </body>
 </html>
