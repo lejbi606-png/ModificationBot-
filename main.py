@@ -251,7 +251,7 @@ async def cmd_ref_menu(message: Message):
             FROM managed_chats m
             LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
             LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
-            WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL
+            WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL OR m.owner_id = $1
         ''', user_id)
         
     if not rows:
@@ -285,16 +285,18 @@ async def handle_getref(callback: CallbackQuery):
             link = existing['invite_link']
         else:
             try:
-                inv = await bot.create_chat_invite_link(
-                    chat_id=chat_id,
-                    name=f"От {user.first_name}",
-                    creates_join_request=False
+                inv = await asyncio.wait_for(
+                    bot.create_chat_invite_link(chat_id=chat_id, name=f"От {user.first_name}", creates_join_request=False),
+                    timeout=3.0
                 )
                 link = inv.invite_link
                 await conn.execute('''
                     INSERT INTO referral_links (invite_link, chat_id, referrer_id)
                     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
                 ''', link, chat_id, user.id)
+            except asyncio.TimeoutError:
+                await callback.answer(f"❌ Telegram не ответил вовремя. Попробуй позже.", show_alert=True)
+                return
             except Exception as e:
                 await callback.answer(f"❌ Не могу создать ссылку. Дай боту права 'Приглашать по ссылке'. Ошибка: {e}", show_alert=True)
                 return
@@ -635,70 +637,76 @@ def validate_init_data(init_data: str) -> dict | None:
 
 
 async def api_balance(request):
-    init_data = request.query.get("initData")
-    if not init_data: return web.json_response({"error": "No initData"}, status=401)
-    user_data = validate_init_data(init_data)
-    if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
-    user_id = user_data.get("id")
-    
-    async with db_pool.acquire() as conn:
-        total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
+    try:
+        init_data = request.query.get("initData")
+        if not init_data: return web.json_response({"error": "No initData"}, status=401)
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
         
-        rows = await conn.fetch('''
-            SELECT b.chat_id, b.balance, m.title, m.chat_type
-            FROM balances b 
-            LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
-            WHERE b.user_id = $1 AND b.balance != 0 
-            ORDER BY b.balance DESC
-        ''', user_id)
-        
-        my_chats_raw = await conn.fetch('''
-            SELECT m.chat_id, MAX(m.title) as title, MAX(m.chat_type) as chat_type
-            FROM managed_chats m
-            LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
-            LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
-            WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL
-            GROUP BY m.chat_id
-        ''', user_id)
-        
-        my_chats = []
-        seen_titles = set() 
-        
-        for r in my_chats_raw:
-            title = r['title']
-            if title in seen_titles:
-                continue
-            seen_titles.add(title)
+        async with db_pool.acquire() as conn:
+            total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
             
-            cid = r['chat_id']
-            link = None
+            rows = await conn.fetch('''
+                SELECT b.chat_id, b.balance, m.title, m.chat_type
+                FROM balances b 
+                LEFT JOIN managed_chats m ON m.chat_id = b.chat_id
+                WHERE b.user_id = $1 AND b.balance != 0 
+                ORDER BY b.balance DESC
+            ''', user_id)
             
-            try:
-                link_row = await conn.fetchrow('SELECT invite_link FROM referral_links WHERE chat_id = $1 AND referrer_id = $2 AND invite_link NOT LIKE \'%start=%\'', cid, user_id)
+            my_chats_raw = await conn.fetch('''
+                SELECT m.chat_id, MAX(m.title) as title, MAX(m.chat_type) as chat_type
+                FROM managed_chats m
+                LEFT JOIN balances b ON b.chat_id = m.chat_id AND b.user_id = $1
+                LEFT JOIN chat_admins ca ON ca.chat_id = m.chat_id AND ca.user_id = $1
+                WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL OR m.owner_id = $1
+                GROUP BY m.chat_id
+            ''', user_id)
+            
+            my_chats = []
+            seen_titles = set() 
+            
+            for r in my_chats_raw:
+                title = r['title'] or f"Чат {r['chat_id']}"
+                if title in seen_titles:
+                    continue
+                seen_titles.add(title)
                 
-                if link_row and link_row['invite_link']:
-                    link = link_row['invite_link']
-                else:
-                    inv = await bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}")
-                    link = inv.invite_link
-                    await conn.execute('DELETE FROM referral_links WHERE chat_id = $1 AND referrer_id = $2', cid, user_id)
-                    await conn.execute('INSERT INTO referral_links (invite_link, chat_id, referrer_id) VALUES ($1, $2, $3)', link, cid, user_id)
-            except Exception as e:
-                print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
+                cid = r['chat_id']
+                link = None
+                
+                try:
+                    link_row = await conn.fetchrow('SELECT invite_link FROM referral_links WHERE chat_id = $1 AND referrer_id = $2 AND invite_link NOT LIKE \'%start=%\'', cid, user_id)
+                    
+                    if link_row and link_row['invite_link']:
+                        link = link_row['invite_link']
+                    else:
+                        inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=2.0)
+                        link = inv.invite_link
+                        await conn.execute('DELETE FROM referral_links WHERE chat_id = $1 AND referrer_id = $2', cid, user_id)
+                        await conn.execute('INSERT INTO referral_links (invite_link, chat_id, referrer_id) VALUES ($1, $2, $3)', link, cid, user_id)
+                except asyncio.TimeoutError:
+                    print(f"⚠️ Таймаут при создании ссылки для {cid}. Пропускаем.")
+                except Exception as e:
+                    print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
+                
+                my_chats.append({
+                    "chat_id": cid,
+                    "title": title,
+                    "chat_type": r['chat_type'],
+                    "referral_link": link
+                })
             
-            my_chats.append({
-                "chat_id": cid,
-                "title": title,
-                "chat_type": r['chat_type'],
-                "referral_link": link
-            })
-        
-    return web.json_response({
-        "user_id": user_id,
-        "total_balance": total,
-        "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"], "chat_type": r["chat_type"]} for r in rows],
-        "my_chats": my_chats
-    })
+        return web.json_response({
+            "user_id": user_id,
+            "total_balance": total,
+            "balances": [{"chat_id": r["chat_id"], "balance": r["balance"], "title": r["title"] or f"Чат {r['chat_id']}", "chat_type": r["chat_type"]} for r in rows],
+            "my_chats": my_chats
+        })
+    except Exception as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА В API_BALANCE: {e}")
+        return web.json_response({"error": "Internal Server Error", "details": str(e)}, status=500)
 
 
 async def api_top(request):
@@ -797,6 +805,10 @@ async def api_history(request):
         item = dict(r)
         if isinstance(item.get('created_at'), datetime):
             item['created_at'] = item['created_at'].isoformat()
+            
+        if not item['message_text']:
+            item['message_text'] = "(Без текста / Медиафайл)"
+            
         history_data.append(item)
 
     return web.json_response({"history": history_data})
