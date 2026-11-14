@@ -5,6 +5,7 @@ import asyncpg
 import hashlib
 import hmac
 import json
+import random
 from urllib.parse import parse_qsl
 from datetime import datetime, timedelta
 from aiohttp import web
@@ -151,6 +152,30 @@ async def init_db():
                         status TEXT DEFAULT 'pending',
                         check_at TIMESTAMP NOT NULL,
                         PRIMARY KEY (referred_id, chat_id)
+                    );
+                ''')
+
+                # --- ТАБЛИЦЫ ДЛЯ СТАВОК (PREDICTIONS) ---
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        creator_id BIGINT NOT NULL,
+                        question TEXT NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        end_time TIMESTAMP NOT NULL,
+                        pool_yes BIGINT DEFAULT 0,
+                        pool_no BIGINT DEFAULT 0
+                    );
+                ''')
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS prediction_bets (
+                        id SERIAL PRIMARY KEY,
+                        prediction_id INTEGER NOT NULL REFERENCES predictions(id) ON DELETE CASCADE,
+                        user_id BIGINT NOT NULL,
+                        amount BIGINT DEFAULT 0,
+                        choice TEXT NOT NULL,
+                        UNIQUE (prediction_id, user_id)
                     );
                 ''')
                 
@@ -395,6 +420,7 @@ async def handle_reset_chat(callback: CallbackQuery):
             await conn.execute('DELETE FROM transactions WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM referrals WHERE chat_id = $1', cid)
             await conn.execute('DELETE FROM referral_links WHERE chat_id = $1', cid)
+            await conn.execute('DELETE FROM predictions WHERE chat_id = $1', cid)
 
     await callback.answer("✅ Все данные чата сброшены!", show_alert=True)
     title = owner_row['title'] or chat_id
@@ -677,7 +703,6 @@ async def api_balance(request):
                 link = None
                 
                 try:
-                    # Таймаут 2 секунды на создание ссылки
                     inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=2.0)
                     link = inv.invite_link
                 except Exception as e:
@@ -719,7 +744,7 @@ async def api_top(request):
             SELECT b.user_id, b.balance, u.first_name
             FROM balances b JOIN users u ON u.user_id = b.user_id
             WHERE b.chat_id = $1
-            ORDER BY b.balance DESC LIMIT 10
+            ORDER BY b.balance DESC LIMIT 5
         ''', chat_id)
         
         user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
@@ -727,12 +752,12 @@ async def api_top(request):
         
         rank_row = await conn.fetchval('SELECT COUNT(*) + 1 FROM balances WHERE chat_id = $1 AND balance > $2', chat_id, user_bal)
         
-        to_top10 = 0
-        if len(top_rows) >= 10 and rank_row > 10:
-            tenth_place_bal = top_rows[-1]['balance']
-            to_top10 = (tenth_place_bal - user_bal) + 1
-        elif len(top_rows) < 10 and rank_row > len(top_rows):
-             to_top10 = 1 
+        to_top5 = 0
+        if len(top_rows) >= 5 and rank_row > 5:
+            fifth_place_bal = top_rows[-1]['balance']
+            to_top5 = (fifth_place_bal - user_bal) + 1
+        elif len(top_rows) < 5 and rank_row > len(top_rows):
+             to_top5 = 1 
              
         return web.json_response({
             "top": [{"user_id": r["user_id"], "balance": r["balance"], "first_name": r["first_name"] or "Аноним"} for r in top_rows],
@@ -740,9 +765,263 @@ async def api_top(request):
                 "rank": rank_row,
                 "balance": user_bal,
                 "name": user_data.get('first_name', 'Ты'),
-                "to_top10": to_top10
+                "to_top5": to_top5
             }
         })
+
+
+# ================== API МАГАЗИНА ==================
+async def api_shop_casino(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        bet = int(data.get("bet"))
+        
+        if bet <= 0:
+            return web.json_response({"error": "Ставка должна быть больше 0"}, status=400)
+            
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+                current_bal = bal_row['balance'] if bal_row else 0
+                
+                if current_bal < bet:
+                    return web.json_response({"error": "Недостаточно баллов в этом чате"}, status=400)
+                
+                await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', bet, chat_id, user_id)
+                await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'casino_bet')", chat_id, user_id, -bet)
+                
+                win = random.choice([True, False])
+                
+                if win:
+                    win_amount = bet * 2
+                    await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', win_amount, chat_id, user_id)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'casino_win')", chat_id, user_id, win_amount)
+                    return web.json_response({"result": "win", "amount": win_amount})
+                else:
+                    return web.json_response({"result": "lose", "amount": bet})
+    except Exception as e:
+        print(f"❌ Ошибка казино: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_shop_post(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        text = data.get("text")
+        is_anonymous = data.get("is_anonymous", False)
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        user_name = user_data.get("first_name", "User")
+        
+        cost = 20 # Стоимость поста
+        
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+                current_bal = bal_row['balance'] if bal_row else 0
+                
+                if current_bal < cost:
+                    return web.json_response({"error": f"Нужно {cost} баллов в этом чате"}, status=400)
+                
+                if is_anonymous:
+                    post_text = f"🕵️‍♂️ <b>Анонимное сообщение:</b>\n\n{text}"
+                else:
+                    post_text = f"📢 <b>Сообщение от {user_name}:</b>\n\n{text}"
+                
+                try:
+                    await bot.send_message(chat_id=chat_id, text=post_text, parse_mode="HTML")
+                except Exception as e:
+                    return web.json_response({"error": f"Не удалось отправить в канал: {e}"}, status=500)
+                
+                await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', cost, chat_id, user_id)
+                await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, $3, 'shop_post', $4)", chat_id, user_id, -cost, text)
+                
+                return web.json_response({"result": "ok"})
+    except Exception as e:
+        print(f"❌ Ошибка поста: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ================== API СТАВОК (PREDICTIONS) ==================
+async def api_predictions_list(request):
+    try:
+        init_data = request.query.get("initData")
+        chat_id_str = request.query.get("chat_id")
+        if not init_data or not chat_id_str: return web.json_response({"error": "No data"}, status=400)
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        chat_id = int(chat_id_str)
+        
+        async with db_pool.acquire() as conn:
+            is_admin = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+            
+            preds = await conn.fetch('''
+                SELECT id, question, status, end_time, pool_yes, pool_no, creator_id
+                FROM predictions WHERE chat_id = $1 ORDER BY id DESC LIMIT 20
+            ''', chat_id)
+            
+            res = []
+            for p in preds:
+                user_bet = await conn.fetchrow('SELECT amount, choice FROM prediction_bets WHERE prediction_id = $1 AND user_id = $2', p['id'], user_id)
+                res.append({
+                    "id": p['id'],
+                    "question": p['question'],
+                    "status": p['status'],
+                    "end_time": p['end_time'].isoformat(),
+                    "pool_yes": p['pool_yes'],
+                    "pool_no": p['pool_no'],
+                    "user_bet": dict(user_bet) if user_bet else None
+                })
+                
+            return web.json_response({"predictions": res, "is_admin": bool(is_admin)})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_predictions_create(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        question = data.get("question")
+        hours = int(data.get("hours", 3))
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        async with db_pool.acquire() as conn:
+            is_admin = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+            if not is_admin and user_id not in ADMIN_IDS:
+                return web.json_response({"error": "Ты не админ этого чата"}, status=403)
+            
+            end_time = datetime.now() + timedelta(hours=hours)
+            await conn.execute('''
+                INSERT INTO predictions (chat_id, creator_id, question, status, end_time)
+                VALUES ($1, $2, $3, 'active', $4)
+            ''', chat_id, user_id, question, end_time)
+            
+            return web.json_response({"result": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_predictions_bet(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        pred_id = int(data.get("pred_id"))
+        choice = data.get("choice") # 'yes' or 'no'
+        amount = int(data.get("amount"))
+        
+        if amount <= 0: return web.json_response({"error": "Ставка должна быть > 0"}, status=400)
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                pred = await conn.fetchrow('SELECT status, end_time FROM predictions WHERE id = $1 AND chat_id = $2', pred_id, chat_id)
+                if not pred or pred['status'] != 'active':
+                    return web.json_response({"error": "Ставка закрыта или не найдена"}, status=400)
+                
+                if datetime.now() > pred['end_time'].replace(tzinfo=None):
+                    return web.json_response({"error": "Время ставок истекло!"}, status=400)
+                
+                # Проверка баланса
+                bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+                current_bal = bal_row['balance'] if bal_row else 0
+                if current_bal < amount:
+                    return web.json_response({"error": "Недостаточно баллов"}, status=400)
+                
+                # Проверка существующей ставки
+                existing_bet = await conn.fetchrow('SELECT choice FROM prediction_bets WHERE prediction_id = $1 AND user_id = $2', pred_id, user_id)
+                if existing_bet and existing_bet['choice'] != choice:
+                    return web.json_response({"error": "Ты уже ставил на другой исход!"}, status=400)
+                
+                # Списание
+                await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', amount, chat_id, user_id)
+                await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, $3, 'prediction_bet', $4)", chat_id, user_id, -amount, f"Ставка на {choice}")
+                
+                # Запись ставки
+                if existing_bet:
+                    await conn.execute('UPDATE prediction_bets SET amount = amount + $1 WHERE prediction_id = $2 AND user_id = $3', amount, pred_id, user_id)
+                else:
+                    await conn.execute('INSERT INTO prediction_bets (prediction_id, user_id, amount, choice) VALUES ($1, $2, $3, $4)', pred_id, user_id, amount, choice)
+                
+                # Обновление пула
+                if choice == 'yes':
+                    await conn.execute('UPDATE predictions SET pool_yes = pool_yes + $1 WHERE id = $2', amount, pred_id)
+                else:
+                    await conn.execute('UPDATE predictions SET pool_no = pool_no + $1 WHERE id = $2', amount, pred_id)
+                    
+                return web.json_response({"result": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_predictions_resolve(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        pred_id = int(data.get("pred_id"))
+        outcome = data.get("outcome") # 'yes' or 'no'
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                is_admin = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+                if not is_admin and user_id not in ADMIN_IDS:
+                    return web.json_response({"error": "Ты не админ"}, status=403)
+                    
+                pred = await conn.fetchrow('SELECT pool_yes, pool_no, status FROM predictions WHERE id = $1', pred_id)
+                if not pred or pred['status'] != 'active':
+                    return web.json_response({"error": "Уже завершено"}, status=400)
+                
+                pool_yes = pred['pool_yes']
+                pool_no = pred['pool_no']
+                total_pool = pool_yes + pool_no
+                
+                win_pool = pool_yes if outcome == 'yes' else pool_no
+                lose_pool = pool_no if outcome == 'yes' else pool_yes
+                
+                if win_pool == 0:
+                    # Возврат всем (нет победителей)
+                    bets = await conn.fetch('SELECT user_id, amount FROM prediction_bets WHERE prediction_id = $1', pred_id)
+                    for b in bets:
+                        await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', b['amount'], chat_id, b['user_id'])
+                    await conn.execute("UPDATE predictions SET status = 'canceled' WHERE id = $1", pred_id)
+                    return web.json_response({"result": "canceled"})
+                
+                # Начисление выигрыша
+                winning_bets = await conn.fetch('SELECT user_id, amount FROM prediction_bets WHERE prediction_id = $1 AND choice = $2', pred_id, outcome)
+                for b in winning_bets:
+                    payout = int((b['amount'] / win_pool) * total_pool)
+                    await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', payout, chat_id, b['user_id'])
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'prediction_win')", chat_id, b['user_id'], payout)
+                
+                await conn.execute("UPDATE predictions SET status = $1 WHERE id = $2", f"resolved_{outcome}", pred_id)
+                return web.json_response({"result": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def api_history(request):
@@ -799,7 +1078,7 @@ async def api_history(request):
             item['created_at'] = item['created_at'].isoformat()
             
         if not item['message_text']:
-            item['message_text'] = "(Без текста / Медиафайл)"
+            item['message_text'] = ""
             
         history_data.append(item)
 
@@ -819,6 +1098,15 @@ async def start_web_server():
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
     app.router.add_get('/api/history', api_history)
+    
+    app.router.add_post('/api/shop/casino', api_shop_casino)
+    app.router.add_post('/api/shop/post', api_shop_post)
+    
+    app.router.add_get('/api/predictions', api_predictions_list)
+    app.router.add_post('/api/predictions/create', api_predictions_create)
+    app.router.add_post('/api/predictions/bet', api_predictions_bet)
+    app.router.add_post('/api/predictions/resolve', api_predictions_resolve)
+    
     app.router.add_get('/webapp', serve_index)
     app.router.add_get('/webapp/', serve_index)
     app.router.add_static('/webapp/', path=os.path.join(os.path.dirname(__file__), 'webapp'), name='webapp_static')
