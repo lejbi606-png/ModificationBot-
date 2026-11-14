@@ -204,7 +204,7 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ (500x500 + ШТАМП) ==================
+// ================== ПИКСЕЛЬ БАТЛ ==================
 const CANVAS_SIZE = 2000;
 const GRID_SIZE = 500;
 const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 4px
@@ -214,16 +214,14 @@ let isPixelInitialized = false;
 let currentColor = "#FF3B30";
 let cachedPixels = [];
 
-// Трансформации холста
 let scale = 1, translateX = 0, translateY = 0;
 let isDragging = false, isZooming = false;
 let lastTouchX = 0, lastTouchY = 0;
 let initialDistance = 0, initialScale = 1;
 
-// Штамп
 let stampPixels = [];
 let stampVisible = false;
-let stampX = 250; // Центр
+let stampX = 250; 
 let stampY = 250;
 let stampScale = 1;
 let initialStampScale = 1;
@@ -284,7 +282,6 @@ function applyTransform() {
     canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
 }
 
-// --- УПРАВЛЕНИЕ ЖЕСТАМИ (ШТАМП vs ХОЛСТ) ---
 function handleTouchStart(e) {
     if (e.touches.length === 1) {
         isDragging = true; isZooming = false;
@@ -305,23 +302,19 @@ function handleTouchMove(e) {
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewport.dataset.dragged = "true";
         
         if (stampVisible) {
-            // Двигаем ШТАМП
             stampX += dx / (CELL_SIZE * scale);
             stampY += dy / (CELL_SIZE * scale);
             drawCanvas();
         } else {
-            // Двигаем ХОЛСТ
             translateX += dx; translateY += dy; applyTransform();
         }
         lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
     } else if (e.touches.length === 2) {
         const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         if (stampVisible) {
-            // Зумим ШТАМП
             stampScale = Math.max(0.1, Math.min(5, initialStampScale * (currentDistance / initialDistance)));
             drawCanvas();
         } else {
-            // Зумим ХОЛСТ
             scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 15);
             applyTransform();
         }
@@ -406,17 +399,14 @@ function drawCanvas() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     
-    // Рисуем холст
     cachedPixels.forEach(p => drawPixelOnCanvas(p.x, p.y, p.color));
 
-    // Рисуем штамп (полупрозрачный поверх)
     if (stampVisible && stampPixels.length > 0) {
-        ctx.globalAlpha = 0.6; // Прозрачность штампа
+        ctx.globalAlpha = 0.6; 
         stampPixels.forEach(p => {
             const px = Math.floor(stampX + p.x * stampScale);
             const py = Math.floor(stampY + p.y * stampScale);
             if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-                // Рисуем штамп поверх (визуально)
                 ctx.fillStyle = p.color;
                 ctx.fillRect(px * CELL_SIZE, py * CELL_SIZE, CELL_SIZE * stampScale, CELL_SIZE * stampScale);
             }
@@ -433,7 +423,6 @@ async function fetchAndDrawPixels() {
     drawCanvas();
 }
 
-// --- СБРОС ---
 let resetConfirmPending = false; let resetTimeout = null;
 async function resetCanvas(event) {
     const btn = event.target;
@@ -453,7 +442,6 @@ async function resetCanvas(event) {
     finally { btn.innerText = "🗑 Сбросить"; btn.disabled = false; btn.style.background = '#ff4a4a'; }
 }
 
-// --- ЛОГИКА ШТАМПА ---
 function handleImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -471,7 +459,6 @@ function handleImageUpload(event) {
 }
 
 function processImageToStamp(img) {
-    // Ограничиваем исходный размер картинки до 50 пикселей в ширину/высоту
     const maxSize = 50;
     const tempCanvas = document.createElement('canvas');
     const tempCtx = tempCanvas.getContext('2d');
@@ -486,12 +473,11 @@ function processImageToStamp(img) {
     const imgData = tempCtx.getImageData(0, 0, w, h).data;
     const pixels = [];
     
-    // Квантуем цвета под нашу палитру
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             const i = (y * w + x) * 4;
             const r = imgData[i], g = imgData[i+1], b = imgData[i+2], a = imgData[i+3];
-            if (a < 50) continue; // Прозрачные пиксели пропускаем
+            if (a < 50) continue; 
             const nearestColor = getNearestColor(r, g, b);
             pixels.push({ x: x, y: y, color: nearestColor });
         }
@@ -501,7 +487,7 @@ function processImageToStamp(img) {
     stampImgWidth = w;
     stampImgHeight = h;
     stampScale = 1;
-    stampX = (GRID_SIZE - w) / 2; // Центр холста
+    stampX = (GRID_SIZE - w) / 2; 
     stampY = (GRID_SIZE - h) / 2;
     stampVisible = true;
     
@@ -526,10 +512,7 @@ function applyStamp() {
     if (!stampVisible || stampPixels.length === 0) return;
     
     const pixelsToSave = [];
-    // Пересчитываем пиксели штампа в глобальные координаты холста
     stampPixels.forEach(p => {
-        // Из-за масштаба штампа, один пиксель картинки может занимать несколько клеток.
-        // Нам нужно "растянуть" пиксели. 
         for (let sy = 0; sy < stampScale; sy++) {
             for (let sx = 0; sx < stampScale; sx++) {
                 const px = Math.floor(stampX + p.x * stampScale + sx);
@@ -554,7 +537,7 @@ function applyStamp() {
         if (res.ok) {
             tg.showAlert("✅ Штамп поставлен!");
             cancelStamp();
-            fetchAndDrawPixels(); // Обновляем чистый холст
+            fetchAndDrawPixels();
         } else {
             tg.showAlert("Ошибка: " + (res.data.error || "Неизвестно"));
         }
@@ -569,7 +552,6 @@ function cancelStamp() {
     drawCanvas();
 }
 
-// --- ИСТОРИЯ ---
 async function loadHistory() {
     const select = document.getElementById('history-chat-select'); const chatId = select.value; const params = chatId ? `&chat_id=${chatId}` : '';
     const historyList = document.getElementById('history-list');
