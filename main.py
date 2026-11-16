@@ -186,6 +186,12 @@ async def init_db():
                         PRIMARY KEY (x, y)
                     );
                 ''')
+
+                # Миграция: чиним старые записи, где max_rewarded хранил баллы (у модераторов x5), а не количество эмодзи
+                await conn.execute('''
+                    UPDATE reactions SET max_rewarded = COALESCE(cardinality(rewarded_emojis), 0)
+                    WHERE COALESCE(max_rewarded, 0) != COALESCE(cardinality(rewarded_emojis), 0)
+                ''')
                 
             print("✅ База данных готова.")
             return
@@ -470,7 +476,24 @@ async def handle_channel_post(message: Message):
                 ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
             ''', message.from_user.id, message.from_user.first_name, message.from_user.username)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Забрать баллы", callback_data=f"earn_{message.message_id}")]])
+    our_callback = f"earn_{message.message_id}"
+    existing_rows = []
+    if message.reply_markup and getattr(message.reply_markup, 'inline_keyboard', None):
+        existing_rows = [list(row) for row in message.reply_markup.inline_keyboard]
+
+    already_has = False
+    for row in existing_rows:
+        for btn in row:
+            if getattr(btn, 'callback_data', None) == our_callback:
+                already_has = True
+                break
+        if already_has:
+            break
+
+    if not already_has:
+        existing_rows.append([InlineKeyboardButton(text="👀 Забрать баллы", callback_data=our_callback)])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=existing_rows)
     try:
         await message.edit_reply_markup(reply_markup=kb)
     except Exception as e:
@@ -573,11 +596,14 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                 current_unique = len(new)
 
                 if row is None:
-                    reward = current_unique * multiplier
+                    # Первый заход: сколько уникальных эмодзи стоит — столько и оплачиваем.
+                    # max_rewarded хранит именно КОЛИЧЕСТВО оплаченных эмодзи, а не баллы.
+                    pay_count = current_unique
+                    reward = pay_count * multiplier
                     await conn.execute('''
                         INSERT INTO reactions (chat_id, user_id, message_id, max_rewarded, rewarded_emojis, toggles)
                         VALUES ($1, $2, $3, $4, $5, 0)
-                    ''', chat_id, user.id, msg_id, reward, list(new))
+                    ''', chat_id, user.id, msg_id, pay_count, list(new))
                     
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
@@ -677,6 +703,7 @@ async def api_balance(request):
         user_data = validate_init_data(init_data)
         if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
         user_id = user_data.get("id")
+        first_name = user_data.get('first_name', 'User')
         
         async with db_pool.acquire() as conn:
             total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
@@ -697,31 +724,52 @@ async def api_balance(request):
                 WHERE b.user_id IS NOT NULL OR ca.user_id IS NOT NULL OR m.owner_id = $1
                 GROUP BY m.chat_id
             ''', user_id)
-            
-            my_chats = []
-            seen_titles = set() 
-            
-            for r in my_chats_raw:
-                title = r['title']
-                if title in seen_titles:
-                    continue
-                seen_titles.add(title)
-                
-                cid = r['chat_id']
-                link = None
-                
+
+        # Дедуп по title (как было)
+        seen_titles = set()
+        my_chats_filtered = []
+        for r in my_chats_raw:
+            if r['title'] in seen_titles:
+                continue
+            seen_titles.add(r['title'])
+            my_chats_filtered.append(r)
+
+        # Параллельное получение/создание инвайт-ссылок. Сначала смотрим в кэш referral_links,
+        # только если нет — дёргаем Telegram.
+        async def get_or_create_link(cid):
+            async with db_pool.acquire() as c:
+                existing = await c.fetchrow('''
+                    SELECT invite_link FROM referral_links 
+                    WHERE chat_id = $1 AND referrer_id = $2 
+                    AND invite_link NOT LIKE '%start=%'
+                    ORDER BY created_at DESC LIMIT 1
+                ''', cid, user_id)
+                if existing and existing['invite_link']:
+                    return existing['invite_link']
                 try:
-                    inv = await asyncio.wait_for(bot.create_chat_invite_link(chat_id=cid, name=f"От {user_data.get('first_name', 'User')}"), timeout=2.0)
-                    link = inv.invite_link
+                    inv = await asyncio.wait_for(
+                        bot.create_chat_invite_link(chat_id=cid, name=f"От {first_name}", creates_join_request=False),
+                        timeout=2.5
+                    )
+                    await c.execute('''
+                        INSERT INTO referral_links (invite_link, chat_id, referrer_id)
+                        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+                    ''', inv.invite_link, cid, user_id)
+                    return inv.invite_link
                 except Exception as e:
                     print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
-                
-                my_chats.append({
-                    "chat_id": cid,
-                    "title": title,
-                    "chat_type": r['chat_type'],
-                    "referral_link": link
-                })
+                    return None
+
+        links = await asyncio.gather(*[get_or_create_link(r['chat_id']) for r in my_chats_filtered])
+        
+        my_chats = []
+        for r, link in zip(my_chats_filtered, links):
+            my_chats.append({
+                "chat_id": r['chat_id'],
+                "title": r['title'],
+                "chat_type": r['chat_type'],
+                "referral_link": link
+            })
             
         return web.json_response({
             "user_id": user_id,
@@ -1069,7 +1117,6 @@ async def api_pixel_set_batch(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
-        # УВЕЛИЧЕН ЛИМИТ ДО 1 000 000
         if len(pixels) > 1000000: return web.json_response({"error": "Слишком много пикселей (макс 1 000 000)"}, status=400)
             
         async with db_pool.acquire() as conn:
@@ -1119,7 +1166,8 @@ async def api_history(request):
             if is_admin:
                 rows = await conn.fetch('''
                     SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.message_text, t.created_at, 
-                           u1.first_name as sender_name, u2.first_name as receiver_name,
+                           u1.first_name as sender_name, u1.username as sender_username,
+                           u2.first_name as receiver_name, u2.username as receiver_username,
                            m.title as chat_title
                     FROM transactions t
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
@@ -1130,7 +1178,8 @@ async def api_history(request):
             else:
                 rows = await conn.fetch('''
                     SELECT t.id, t.sender_id, t.receiver_id, t.amount, t.type, t.message_text, t.created_at, 
-                           u1.first_name as sender_name, u2.first_name as receiver_name,
+                           u1.first_name as sender_name, u1.username as sender_username,
+                           u2.first_name as receiver_name, u2.username as receiver_username,
                            m.title as chat_title
                     FROM transactions t
                     LEFT JOIN users u1 ON u1.user_id = t.sender_id
@@ -1141,7 +1190,8 @@ async def api_history(request):
         else:
             rows = await conn.fetch('''
                 SELECT t.id, t.chat_id, t.amount, t.type, t.message_text, t.created_at, 
-                       u1.first_name as sender_name, u2.first_name as receiver_name,
+                       u1.first_name as sender_name, u1.username as sender_username,
+                       u2.first_name as receiver_name, u2.username as receiver_username,
                        m.title as chat_title
                 FROM transactions t 
                 LEFT JOIN users u1 ON u1.user_id = t.sender_id
@@ -1155,10 +1205,8 @@ async def api_history(request):
         item = dict(r)
         if isinstance(item.get('created_at'), datetime):
             item['created_at'] = item['created_at'].isoformat()
-            
-        if not item['message_text']:
+        if not item.get('message_text'):
             item['message_text'] = ""
-            
         history_data.append(item)
 
     return web.json_response({"history": history_data})
@@ -1172,7 +1220,6 @@ async def serve_index(request):
     return web.FileResponse(file_path)
 
 async def start_web_server():
-    # УВЕЛИЧЕН ЛИМИТ ЗАПРОСА ДО 20 МБ
     app = web.Application(client_max_size=1024**2 * 20)
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
