@@ -121,6 +121,7 @@ async function loadTop() {
 }
 
 async function loadShop() {}
+
 async function playCasino() {
     const chatId = document.getElementById('shop-chat-select').value; const betStr = document.getElementById('casino-bet').value;
     if (!chatId) return tg.showAlert("Выбери чат!"); const bet = parseInt(betStr); if (!bet || bet <= 0) return tg.showAlert("Введи корректную ставку!");
@@ -207,7 +208,7 @@ async function resolveBet(predId, outcome) {
 // ================== ПИКСЕЛЬ БАТЛ ==================
 const CANVAS_SIZE = 2000;
 const GRID_SIZE = 200;
-const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 10px
+const CELL_SIZE = CANVAS_SIZE / GRID_SIZE;
 
 let canvas, ctx, viewport;
 let isPixelInitialized = false;
@@ -218,6 +219,7 @@ let scale = 1, translateX = 0, translateY = 0;
 let isDragging = false, isZooming = false;
 let lastTouchX = 0, lastTouchY = 0;
 let initialDistance = 0, initialScale = 1;
+let lastTouchTime = 0;  // защита от дублирования touch → mouse/click
 
 let originalStampImg = null;
 let stampPixels = [];
@@ -268,20 +270,15 @@ async function initPixelBattle() {
     viewport.addEventListener('mousemove', handleMouseMove);
     viewport.addEventListener('mouseup', handleMouseUp);
     viewport.addEventListener('wheel', handleWheel, { passive: false });
-    canvas.addEventListener('click', handleCanvasClick);
+    // Обработчик click убран: он дублировал touchend и mouseup
 
     isPixelInitialized = true;
     fetchAndDrawPixels();
     setInterval(fetchAndDrawPixels, 3000);
 }
 
-function resetTransform() {
-    scale = 1; translateX = 0; translateY = 0; applyTransform();
-}
-
-function applyTransform() {
-    canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-}
+function resetTransform() { scale = 1; translateX = 0; translateY = 0; applyTransform(); }
+function applyTransform() { canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`; }
 
 function handleTouchStart(e) {
     if (e.touches.length === 1) {
@@ -303,9 +300,7 @@ function handleTouchMove(e) {
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewport.dataset.dragged = "true";
         
         if (stampVisible) {
-            stampX += dx / (CELL_SIZE * scale);
-            stampY += dy / (CELL_SIZE * scale);
-            drawCanvas();
+            stampX += dx / (CELL_SIZE * scale); stampY += dy / (CELL_SIZE * scale); drawCanvas();
         } else {
             translateX += dx; translateY += dy; applyTransform();
         }
@@ -314,8 +309,7 @@ function handleTouchMove(e) {
         const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         if (stampVisible) {
             stampScale = Math.max(0.1, Math.min(5, initialStampScale * (currentDistance / initialDistance)));
-            resampleStamp();
-            drawCanvas();
+            resampleStamp(); drawCanvas();
         } else {
             scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 15);
             applyTransform();
@@ -325,56 +319,48 @@ function handleTouchMove(e) {
 
 function handleTouchEnd(e) {
     if (e.touches.length === 0) {
-        if (isDragging && viewport.dataset.dragged === "false" && !isZooming && !stampVisible) {
-            placePixelFromEvent(e.changedTouches[0]);
-        }
+        lastTouchTime = Date.now();
+        if (isDragging && viewport.dataset.dragged === "false" && !isZooming && !stampVisible) placePixelFromEvent(e.changedTouches[0]);
         isDragging = false; isZooming = false;
     }
 }
 
 function handleMouseDown(e) {
+    if (Date.now() - lastTouchTime < 500) return;
     isDragging = true; isZooming = false;
     lastTouchX = e.clientX; lastTouchY = e.clientY;
     viewport.dataset.dragged = "false";
 }
+
 function handleMouseMove(e) {
+    if (Date.now() - lastTouchTime < 500) return;
     if (isDragging) {
         const dx = e.clientX - lastTouchX; const dy = e.clientY - lastTouchY;
         if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewport.dataset.dragged = "true";
-        if (stampVisible) {
-            stampX += dx / (CELL_SIZE * scale); stampY += dy / (CELL_SIZE * scale);
-            drawCanvas();
-        } else {
-            translateX += dx; translateY += dy; applyTransform();
-        }
+        if (stampVisible) { stampX += dx / (CELL_SIZE * scale); stampY += dy / (CELL_SIZE * scale); drawCanvas(); }
+        else { translateX += dx; translateY += dy; applyTransform(); }
         lastTouchX = e.clientX; lastTouchY = e.clientY;
     }
 }
+
 function handleMouseUp(e) {
+    if (Date.now() - lastTouchTime < 500) { isDragging = false; isZooming = false; return; }
     if (isDragging && viewport.dataset.dragged === "false" && !isZooming && !stampVisible) placePixelFromEvent(e);
     isDragging = false; isZooming = false;
 }
+
 function handleWheel(e) {
     e.preventDefault();
     const rect = viewport.getBoundingClientRect();
     const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
     const delta = e.deltaY > 0 ? 0.9 : 1.1; 
-    
-    if (stampVisible) {
-        stampScale = Math.max(0.1, Math.min(5, stampScale * delta));
-        resampleStamp();
-        drawCanvas();
-    } else {
+    if (stampVisible) { stampScale = Math.max(0.1, Math.min(5, stampScale * delta)); resampleStamp(); drawCanvas(); }
+    else {
         const newScale = Math.min(Math.max(scale * delta, 1), 15);
         translateX = mouseX - (mouseX - translateX) * (newScale / scale);
         translateY = mouseY - (mouseY - translateY) * (newScale / scale);
         scale = newScale; applyTransform();
     }
-}
-
-function handleCanvasClick(e) {
-    if (viewport.dataset.dragged === "true" || stampVisible) return; 
-    placePixelFromEvent(e);
 }
 
 async function placePixelFromEvent(e) {
@@ -385,25 +371,18 @@ async function placePixelFromEvent(e) {
     const canvasY = (e.clientY - rect.top) * scaleY;
     const x = Math.floor(canvasX / CELL_SIZE);
     const y = Math.floor(canvasY / CELL_SIZE);
-
     if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
         drawPixelOnCanvas(x, y, currentColor);
         await postAPI('pixel/set', { x, y, color: currentColor });
     }
 }
 
-function drawPixelOnCanvas(x, y, color) {
-    ctx.fillStyle = color;
-    ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-}
+function drawPixelOnCanvas(x, y, color) { ctx.fillStyle = color; ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE); }
 
 function drawCanvas() {
     if (!isPixelInitialized) return;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-    
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     cachedPixels.forEach(p => drawPixelOnCanvas(p.x, p.y, p.color));
-
     if (stampVisible && stampPixels.length > 0) {
         ctx.globalAlpha = 0.6; 
         stampPixels.forEach(p => {
@@ -422,8 +401,7 @@ async function fetchAndDrawPixels() {
     if (!isPixelInitialized) return;
     const data = await fetchAPI('pixel/get');
     if (!data || !data.pixels) return;
-    cachedPixels = data.pixels;
-    drawCanvas();
+    cachedPixels = data.pixels; drawCanvas();
 }
 
 let resetConfirmPending = false; let resetTimeout = null;
@@ -446,46 +424,31 @@ async function resetCanvas(event) {
 }
 
 function handleImageUpload(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
+    const file = event.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-            originalStampImg = img;
-            stampScale = 1;
-            resampleStamp();
-            stampX = (GRID_SIZE - stampImgWidth * stampScale) / 2;
-            stampY = (GRID_SIZE - stampImgHeight * stampScale) / 2;
-            stampVisible = true;
-            document.getElementById('stamp-controls').style.display = 'block';
-            drawCanvas();
+            originalStampImg = img; stampScale = 1; resampleStamp();
+            stampX = (GRID_SIZE - stampImgWidth * stampScale) / 2; stampY = (GRID_SIZE - stampImgHeight * stampScale) / 2;
+            stampVisible = true; document.getElementById('stamp-controls').style.display = 'block'; drawCanvas();
         }
         img.src = e.target.result;
     }
-    reader.readAsDataURL(file);
-    event.target.value = '';
+    reader.readAsDataURL(file); event.target.value = '';
 }
 
 function resampleStamp() {
     if (!originalStampImg) return;
-    
     const targetWidth = Math.max(1, Math.round(50 * stampScale));
     const ratio = originalStampImg.height / originalStampImg.width;
     const targetHeight = Math.max(1, Math.round(targetWidth * ratio));
-
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    tempCanvas.width = targetWidth;
-    tempCanvas.height = targetHeight;
-    
+    const tempCanvas = document.createElement('canvas'); const tempCtx = tempCanvas.getContext('2d');
+    tempCanvas.width = targetWidth; tempCanvas.height = targetHeight;
     tempCtx.imageSmoothingEnabled = false;
     tempCtx.drawImage(originalStampImg, 0, 0, targetWidth, targetHeight);
-    
     const imgData = tempCtx.getImageData(0, 0, targetWidth, targetHeight).data;
     const pixels = [];
-    
     for (let y = 0; y < targetHeight; y++) {
         for (let x = 0; x < targetWidth; x++) {
             const i = (y * targetWidth + x) * 4;
@@ -495,19 +458,13 @@ function resampleStamp() {
             pixels.push({ x: x, y: y, color: nearestColor });
         }
     }
-    
-    stampPixels = pixels;
-    stampImgWidth = targetWidth;
-    stampImgHeight = targetHeight;
+    stampPixels = pixels; stampImgWidth = targetWidth; stampImgHeight = targetHeight;
 }
 
 function getNearestColor(r, g, b) {
-    let minDist = Infinity;
-    let bestColor = "#000000";
+    let minDist = Infinity; let bestColor = "#000000";
     for (const color of COLORS) {
-        const cr = parseInt(color.slice(1,3), 16);
-        const cg = parseInt(color.slice(3,5), 16);
-        const cb = parseInt(color.slice(5,7), 16);
+        const cr = parseInt(color.slice(1,3), 16); const cg = parseInt(color.slice(3,5), 16); const cb = parseInt(color.slice(5,7), 16);
         const dist = Math.pow(r - cr, 2) + Math.pow(g - cg, 2) + Math.pow(b - cb, 2);
         if (dist < minDist) { minDist = dist; bestColor = color; }
     }
@@ -516,9 +473,7 @@ function getNearestColor(r, g, b) {
 
 function applyStamp() {
     if (!stampVisible || stampPixels.length === 0) return;
-    
     const uniquePixels = new Map();
-    
     stampPixels.forEach(p => {
         for (let sy = 0; sy < stampScale; sy++) {
             for (let sx = 0; sx < stampScale; sx++) {
@@ -530,134 +485,135 @@ function applyStamp() {
             }
         }
     });
-
     const pixelsToSave = Array.from(uniquePixels.values());
-
     if (pixelsToSave.length === 0) return tg.showAlert("Штамп за пределами холста");
-
     tg.showPopup({
-        title: 'Поставить штамп?',
-        message: `Будет закрашено ${pixelsToSave.length} пикселей.`,
+        title: 'Поставить штамп?', message: `Будет закрашено ${pixelsToSave.length} пикселей.`,
         buttons: [{id: 'ok', type: 'default', text: 'Поставить'}, {id: 'cancel', type: 'cancel'}]
     }, async (buttonId) => {
         if (buttonId !== 'ok') return;
-        
         const res = await postAPI('pixel/set_batch', { pixels: pixelsToSave });
-        if (res.ok) {
-            tg.showAlert("✅ Штамп поставлен!");
-            cancelStamp();
-            fetchAndDrawPixels();
-        } else {
-            tg.showAlert("Ошибка: " + (res.data.error || "Неизвестно"));
-        }
+        if (res.ok) { tg.showAlert("✅ Штамп поставлен!"); cancelStamp(); fetchAndDrawPixels(); }
+        else { tg.showAlert("Ошибка: " + (res.data.error || "Неизвестно")); }
     });
 }
 
 function cancelStamp() {
-    stampVisible = false;
-    stampPixels = [];
-    originalStampImg = null;
+    stampVisible = false; stampPixels = []; originalStampImg = null;
     document.getElementById('stamp-controls').style.display = 'none';
-    document.getElementById('stamp-input').value = '';
-    drawCanvas();
+    document.getElementById('stamp-input').value = ''; drawCanvas();
 }
 
-// ================== ИСТОРИЯ (НОВЫЙ ТАЙМЛАЙН) ==================
-function formatTime(isoString) {
+// ================== ИСТОРИЯ ==================
+
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatUser(username, firstName) {
+    if (username) return `@${username}`;
+    if (firstName) return firstName;
+    return 'Аноним';
+}
+
+function formatDate(isoString) {
     const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMins / 60);
-    const diffDays = Math.floor(diffHours / 24);
-
-    let timeStr = "";
-    if (diffMins < 60) timeStr = `${diffMins} м`;
-    else if (diffHours < 24) timeStr = `${diffHours} ч`;
-    else timeStr = `${diffDays} д`;
-
     const dd = String(date.getDate()).padStart(2, '0');
     const mm = String(date.getMonth() + 1).padStart(2, '0');
     const hh = String(date.getHours()).padStart(2, '0');
     const min = String(date.getMinutes()).padStart(2, '0');
+    return `${dd}.${mm} ${hh}:${min}`;
+}
+
+function getEventInfo(item, chatId) {
+    const isAdminView = !!chatId;
+    const sender = formatUser(item.sender_username, item.sender_name);
+    const receiver = formatUser(item.receiver_username, item.receiver_name);
+    let icon = '❔', title = item.type, subText = '';
     
-    return { relative: timeStr, absolute: `${dd}.${mm} ${hh}:${min}` };
+    switch (item.type) {
+        case 'reaction_earn':
+            icon = '🔥';
+            title = isAdminView ? `${sender} → ${receiver}` : `Реакция: ${sender}`;
+            subText = item.message_text ? `"${item.message_text}"` : 'Без текста';
+            break;
+        case 'channel_earn':
+            icon = '📢';
+            title = `${receiver} забрал балл`;
+            subText = item.message_text ? `"${item.message_text}"` : 'Пост в канале';
+            break;
+        case 'fine':
+            icon = '🚫';
+            title = `Штраф: ${receiver}`;
+            subText = item.message_text ? `"${item.message_text}"` : 'Нарушение';
+            break;
+        case 'referral':
+            icon = '🤝';
+            title = `Бонус за друга: ${receiver}`;
+            subText = 'Реферал';
+            break;
+        case 'casino_win':
+            icon = '🎰';
+            title = `Выигрыш: ${receiver}`;
+            subText = 'Казино';
+            break;
+        case 'casino_bet':
+            icon = '🎲';
+            title = `Ставка: ${sender}`;
+            subText = 'Казино';
+            break;
+        case 'shop_post':
+            icon = '✉️';
+            title = `Пост: ${sender}`;
+            subText = item.message_text ? `"${item.message_text}"` : 'Публикация';
+            break;
+        case 'prediction_bet':
+            icon = '📈';
+            title = `Ставка: ${sender}`;
+            subText = item.message_text || 'Событие';
+            break;
+        case 'prediction_win':
+            icon = '🏆';
+            title = `Выигрыш: ${receiver}`;
+            subText = 'Ставки';
+            break;
+        default:
+            title = item.type;
+    }
+    
+    if (!isAdminView && item.chat_title) {
+        title = `[${item.chat_title}] ${title}`;
+    }
+    
+    return { icon, title: escapeHtml(title), subText: escapeHtml(subText) };
 }
 
 async function loadHistory() {
-    const select = document.getElementById('history-chat-select'); 
-    const chatId = select.value; 
+    const select = document.getElementById('history-chat-select');
+    const chatId = select.value;
     const params = chatId ? `&chat_id=${chatId}` : '';
     const historyList = document.getElementById('history-list');
-    
     historyList.innerHTML = '<div class="loading">Загрузка...</div>';
-    const data = await fetchAPI('history', params); 
-    historyList.innerHTML = '';
-    
-    if (!data || !data.history || !data.history.length) { 
-        historyList.innerHTML = '<div class="loading">История пуста</div>'; 
-        return; 
+    const data = await fetchAPI('history', params);
+    if (!data || !data.history || !data.history.length) {
+        historyList.innerHTML = '<div class="loading">История пуста</div>';
+        return;
     }
-    
+    historyList.innerHTML = '';
     data.history.forEach(item => {
-        let icon = "❔";
-        let title = "";
-        
-        if (item.type === 'reaction_earn') {
-            icon = "🔥";
-            title = chatId ? `${item.sender_name} ➔ ${item.receiver_name}` : `Реакция от ${item.sender_name || 'Кто-то'}`;
-        } else if (item.type === 'channel_earn') {
-            icon = "📢";
-            title = `Забрал балл в канале`;
-        } else if (item.type === 'fine') {
-            icon = "🚫";
-            title = `Штраф за накрутку`;
-        } else if (item.type === 'referral') {
-            icon = "🤝";
-            title = `Бонус за друга`;
-        } else if (item.type === 'casino_win') {
-            icon = "🎰";
-            title = `Выигрыш в казино`;
-        } else if (item.type === 'casino_bet') {
-            icon = "🎲";
-            title = `Ставка в казино`;
-        } else if (item.type === 'shop_post') {
-            icon = "✉️";
-            title = `Пост в канале`;
-        } else if (item.type === 'prediction_bet') {
-            icon = "📈";
-            title = `Ставка на событие`;
-        } else if (item.type === 'prediction_win') {
-            icon = "🏆";
-            title = `Выигрыш по ставке`;
-        } else {
-            title = item.type;
-        }
-
-        if (!chatId && item.chat_title) title = `[${item.chat_title}] ` + title;
-
+        const event = getEventInfo(item, chatId);
+        const dateStr = formatDate(item.created_at);
         const amountStr = item.amount > 0 ? `+${item.amount}` : `${item.amount}`;
         const amountClass = item.amount > 0 ? 'positive' : 'negative';
-        const msgText = item.message_text ? `"${item.message_text}"` : "Без текста";
-        const timeObj = formatTime(item.created_at);
-
-        const div = document.createElement('div'); 
+        const div = document.createElement('div');
         div.className = 'tx-item';
-        
-        div.innerHTML = `
-            <div class="tx-icon">${icon}</div>
-            <div class="tx-info">
-                <div class="tx-title">${title}</div>
-                <div class="tx-sub">
-                    <span class="tx-msg">${msgText}</span>
-                    <span>·</span>
-                    <span>${timeObj.relative}</span>
-                    <span>·</span>
-                    <span>${timeObj.absolute}</span>
-                </div>
-            </div>
-            <div class="tx-amount ${amountClass}">${amountStr} б.</div>
-        `;
+        div.innerHTML = `<div class="tx-icon">${event.icon}</div><div class="tx-info"><div class="tx-title">${event.title}</div><div class="tx-sub">${event.subText} · ${dateStr}</div></div><div class="tx-amount ${amountClass}">${amountStr}</div>`;
         historyList.appendChild(div);
     });
 }
