@@ -204,9 +204,9 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ (200x200 + ШТАМП) ==================
+// ================== ПИКСЕЛЬ БАТЛ (ФИКС ДУБЛИКАТОВ) ==================
 const CANVAS_SIZE = 2000;
-const GRID_SIZE = 200; // УМЕНЬШЕНО ДО 200
+const GRID_SIZE = 200;
 const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 10px
 
 let canvas, ctx, viewport;
@@ -314,7 +314,7 @@ function handleTouchMove(e) {
         const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         if (stampVisible) {
             stampScale = Math.max(0.1, Math.min(5, initialStampScale * (currentDistance / initialDistance)));
-            resampleStamp(); // ПЕРЕСЧЕТ РАЗРЕШЕНИЯ
+            resampleStamp();
             drawCanvas();
         } else {
             scale = Math.min(Math.max(initialScale * (currentDistance / initialDistance), 1), 15);
@@ -362,7 +362,7 @@ function handleWheel(e) {
     
     if (stampVisible) {
         stampScale = Math.max(0.1, Math.min(5, stampScale * delta));
-        resampleStamp(); // ПЕРЕСЧЕТ РАЗРЕШЕНИЯ
+        resampleStamp();
         drawCanvas();
     } else {
         const newScale = Math.min(Math.max(scale * delta, 1), 15);
@@ -453,9 +453,9 @@ function handleImageUpload(event) {
     reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-            originalStampImg = img; // СОХРАНЯЕМ ОРИГИНАЛ
+            originalStampImg = img;
             stampScale = 1;
-            resampleStamp(); // ПЕРВЫЙ ПЕРЕСЧЕТ
+            resampleStamp();
             stampX = (GRID_SIZE - stampImgWidth * stampScale) / 2;
             stampY = (GRID_SIZE - stampImgHeight * stampScale) / 2;
             stampVisible = true;
@@ -471,7 +471,6 @@ function handleImageUpload(event) {
 function resampleStamp() {
     if (!originalStampImg) return;
     
-    // Базовый размер берем 50, умножаем на масштаб
     const targetWidth = Math.max(1, Math.round(50 * stampScale));
     const ratio = originalStampImg.height / originalStampImg.width;
     const targetHeight = Math.max(1, Math.round(targetWidth * ratio));
@@ -481,7 +480,7 @@ function resampleStamp() {
     tempCanvas.width = targetWidth;
     tempCanvas.height = targetHeight;
     
-    tempCtx.imageSmoothingEnabled = false; // Отключаем сглаживание
+    tempCtx.imageSmoothingEnabled = false;
     tempCtx.drawImage(originalStampImg, 0, 0, targetWidth, targetHeight);
     
     const imgData = tempCtx.getImageData(0, 0, targetWidth, targetHeight).data;
@@ -518,18 +517,22 @@ function getNearestColor(r, g, b) {
 function applyStamp() {
     if (!stampVisible || stampPixels.length === 0) return;
     
-    const pixelsToSave = [];
+    // ИСПОЛЬЗУЕМ MAP ЧТОБЫ УБРАТЬ ДУБЛИКАТЫ
+    const uniquePixels = new Map();
+    
     stampPixels.forEach(p => {
         for (let sy = 0; sy < stampScale; sy++) {
             for (let sx = 0; sx < stampScale; sx++) {
                 const px = Math.floor(stampX + p.x * stampScale + sx);
                 const py = Math.floor(stampY + p.y * stampScale + sy);
                 if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-                    pixelsToSave.push({ x: px, y: py, color: p.color });
+                    uniquePixels.set(`${px},${py}`, { x: px, y: py, color: p.color });
                 }
             }
         }
     });
+
+    const pixelsToSave = Array.from(uniquePixels.values());
 
     if (pixelsToSave.length === 0) return tg.showAlert("Штамп за пределами холста");
 
