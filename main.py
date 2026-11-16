@@ -1047,7 +1047,6 @@ async def api_pixel_set(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         
-        # ИЗМЕНЕНО: теперь 200x200
         if x < 0 or x >= 200 or y < 0 or y >= 200:
             return web.json_response({"error": "Координаты вне поля (200x200)"}, status=400)
             
@@ -1070,7 +1069,8 @@ async def api_pixel_set_batch(request):
         
         if not validate_init_data(init_data): return web.json_response({"error": "Invalid initData"}, status=403)
         if not pixels or not isinstance(pixels, list): return web.json_response({"error": "No pixels provided"}, status=400)
-        if len(pixels) > 40000: return web.json_response({"error": "Слишком много пикселей (макс 40000)"}, status=400)
+        # УВЕЛИЧЕН ЛИМИТ ДО 1 000 000
+        if len(pixels) > 1000000: return web.json_response({"error": "Слишком много пикселей (макс 1 000 000)"}, status=400)
             
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -1078,7 +1078,6 @@ async def api_pixel_set_batch(request):
                     px = int(p.get("x"))
                     py = int(p.get("y"))
                     pc = p.get("color")
-                    # ИЗМЕНЕНО: теперь 200x200
                     if 0 <= px < 200 and 0 <= py < 200 and pc:
                         await conn.execute('''
                             INSERT INTO pixel_battle (x, y, color) VALUES ($1, $2, $3)
@@ -1173,8 +1172,8 @@ async def serve_index(request):
     return web.FileResponse(file_path)
 
 async def start_web_server():
-    # УВЕЛИЧЕН ЛИМИТ ДО 10 МБ
-    app = web.Application(client_max_size=1024**2 * 10)
+    # УВЕЛИЧЕН ЛИМИТ ЗАПРОСА ДО 20 МБ
+    app = web.Application(client_max_size=1024**2 * 20)
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
     app.router.add_get('/api/top', api_top)
