@@ -204,7 +204,7 @@ async function resolveBet(predId, outcome) {
     loadBets();
 }
 
-// ================== ПИКСЕЛЬ БАТЛ (ФИКС ДУБЛИКАТОВ) ==================
+// ================== ПИКСЕЛЬ БАТЛ ==================
 const CANVAS_SIZE = 2000;
 const GRID_SIZE = 200;
 const CELL_SIZE = CANVAS_SIZE / GRID_SIZE; // 10px
@@ -517,7 +517,6 @@ function getNearestColor(r, g, b) {
 function applyStamp() {
     if (!stampVisible || stampPixels.length === 0) return;
     
-    // ИСПОЛЬЗУЕМ MAP ЧТОБЫ УБРАТЬ ДУБЛИКАТЫ
     const uniquePixels = new Map();
     
     stampPixels.forEach(p => {
@@ -563,28 +562,102 @@ function cancelStamp() {
     drawCanvas();
 }
 
+// ================== ИСТОРИЯ (НОВЫЙ ТАЙМЛАЙН) ==================
+function formatTime(isoString) {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    let timeStr = "";
+    if (diffMins < 60) timeStr = `${diffMins} м`;
+    else if (diffHours < 24) timeStr = `${diffHours} ч`;
+    else timeStr = `${diffDays} д`;
+
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    
+    return { relative: timeStr, absolute: `${dd}.${mm} ${hh}:${min}` };
+}
+
 async function loadHistory() {
-    const select = document.getElementById('history-chat-select'); const chatId = select.value; const params = chatId ? `&chat_id=${chatId}` : '';
+    const select = document.getElementById('history-chat-select'); 
+    const chatId = select.value; 
+    const params = chatId ? `&chat_id=${chatId}` : '';
     const historyList = document.getElementById('history-list');
+    
     historyList.innerHTML = '<div class="loading">Загрузка...</div>';
-    const data = await fetchAPI('history', params); historyList.innerHTML = '';
-    if (!data || !data.history || !data.history.length) { historyList.innerHTML = '<div class="loading">История пуста</div>'; return; }
+    const data = await fetchAPI('history', params); 
+    historyList.innerHTML = '';
+    
+    if (!data || !data.history || !data.history.length) { 
+        historyList.innerHTML = '<div class="loading">История пуста</div>'; 
+        return; 
+    }
+    
     data.history.forEach(item => {
-        let title = ''; let amountStr = item.amount > 0 ? `+${item.amount}` : `${item.amount}`; let amountClass = item.amount > 0 ? 'positive' : 'negative';
-        if (item.type === 'reaction_earn') title = chatId ? `${item.sender_name} ➔ ${item.receiver_name}` : `Реакция от ${item.sender_name || 'Кто-то'}`;
-        else if (item.type === 'channel_earn') title = `Забрал балл в канале`;
-        else if (item.type === 'fine') title = `Штраф за накрутку`;
-        else if (item.type === 'referral') title = `Бонус за друга`;
-        else if (item.type === 'casino_win') title = `🎰 Выигрыш в казино`;
-        else if (item.type === 'casino_bet') title = `🎰 Ставка в казино`;
-        else if (item.type === 'shop_post') title = `📢 Пост в канале`;
-        else if (item.type === 'prediction_bet') title = `📈 Ставка на событие`;
-        else if (item.type === 'prediction_win') title = `🏆 Выигрыш по ставке`;
-        else title = `${item.type}`;
+        let icon = "❔";
+        let title = "";
+        
+        if (item.type === 'reaction_earn') {
+            icon = "🔥";
+            title = chatId ? `${item.sender_name} ➔ ${item.receiver_name}` : `Реакция от ${item.sender_name || 'Кто-то'}`;
+        } else if (item.type === 'channel_earn') {
+            icon = "📢";
+            title = `Забрал балл в канале`;
+        } else if (item.type === 'fine') {
+            icon = "🚫";
+            title = `Штраф за накрутку`;
+        } else if (item.type === 'referral') {
+            icon = "🤝";
+            title = `Бонус за друга`;
+        } else if (item.type === 'casino_win') {
+            icon = "🎰";
+            title = `Выигрыш в казино`;
+        } else if (item.type === 'casino_bet') {
+            icon = "🎲";
+            title = `Ставка в казино`;
+        } else if (item.type === 'shop_post') {
+            icon = "✉️";
+            title = `Пост в канале`;
+        } else if (item.type === 'prediction_bet') {
+            icon = "📈";
+            title = `Ставка на событие`;
+        } else if (item.type === 'prediction_win') {
+            icon = "🏆";
+            title = `Выигрыш по ставке`;
+        } else {
+            title = item.type;
+        }
+
         if (!chatId && item.chat_title) title = `[${item.chat_title}] ` + title;
-        const div = document.createElement('div'); div.className = 'list-item'; div.style.flexDirection = 'column'; div.style.alignItems = 'flex-start';
-        const msgTextHtml = item.message_text ? `<div class="subtitle">${item.message_text}</div>` : '';
-        div.innerHTML = `<div style="display: flex; justify-content: space-between; width: 100%; align-items: center;"><div class="title">${title}</div><div class="amount ${amountClass}">${amountStr}</div></div>${msgTextHtml}`;
+
+        const amountStr = item.amount > 0 ? `+${item.amount}` : `${item.amount}`;
+        const amountClass = item.amount > 0 ? 'positive' : 'negative';
+        const msgText = item.message_text ? `"${item.message_text}"` : "Без текста";
+        const timeObj = formatTime(item.created_at);
+
+        const div = document.createElement('div'); 
+        div.className = 'tx-item';
+        
+        div.innerHTML = `
+            <div class="tx-icon">${icon}</div>
+            <div class="tx-info">
+                <div class="tx-title">${title}</div>
+                <div class="tx-sub">
+                    <span class="tx-msg">${msgText}</span>
+                    <span>·</span>
+                    <span>${timeObj.relative}</span>
+                    <span>·</span>
+                    <span>${timeObj.absolute}</span>
+                </div>
+            </div>
+            <div class="tx-amount ${amountClass}">${amountStr} б.</div>
+        `;
         historyList.appendChild(div);
     });
 }
