@@ -67,9 +67,7 @@ async function loadBalance() {
         div.style.flexDirection = 'column';
         div.style.alignItems = 'flex-start';
         div.style.gap = '8px';
-        let buttonHtml = item.referral_link 
-            ? `<button class="tab-btn" style="width:100%; background: var(--button-color); color: white;" onclick="copyLink('${item.referral_link}')">Скопировать ссылку</button>`
-            : `<div style="color: #ff4a4a; font-size: 12px; text-align: center; width: 100%;">Нет прав на ссылку</div>`;
+        let buttonHtml = `<button class="tab-btn" style="width:100%; background: var(--button-color); color: white;" onclick="copyLink(${item.chat_id})">Скопировать ссылку</button>`;
         div.innerHTML = `<div class="title">${icon} ${item.title || item.chat_id}</div>${buttonHtml}`;
         refList.appendChild(div);
     });
@@ -92,8 +90,13 @@ async function loadBalance() {
     });
 }
 
-function copyLink(link) {
-    navigator.clipboard.writeText(link).then(() => tg.showAlert("Ссылка скопирована!")).catch(err => tg.showAlert("Не удалось скопировать: " + link));
+async function copyLink(chatId) {
+    const res = await fetchAPI('get_invite_link', `&chat_id=${chatId}`);
+    if (res && res.link) {
+        navigator.clipboard.writeText(res.link).then(() => tg.showAlert("Ссылка скопирована!")).catch(err => tg.showAlert("Не удалось скопировать: " + res.link));
+    } else {
+        tg.showAlert("❌ " + (res ? res.error : "Ошибка сети"));
+    }
 }
 
 async function loadTop() {
@@ -114,7 +117,11 @@ async function loadTop() {
         topList.appendChild(div);
     });
     youPlate.style.display = 'flex';
-    document.getElementById('you-rank').innerText = `#${data.user_place.rank}`;
+    if (data.user_place.rank) {
+        document.getElementById('you-rank').innerText = `#${data.user_place.rank}`;
+    } else {
+        document.getElementById('you-rank').innerText = `Ты не в Топ-5`;
+    }
     document.getElementById('you-name').innerText = data.user_place.name;
     document.getElementById('you-balance').innerText = `${data.user_place.balance} б.`;
     document.getElementById('you-hint').innerText = data.user_place.to_top5 > 0 ? `До Топ-5: ${data.user_place.to_top5} б.` : `Ты в Топ-5!`;
@@ -219,7 +226,7 @@ let scale = 1, translateX = 0, translateY = 0;
 let isDragging = false, isZooming = false;
 let lastTouchX = 0, lastTouchY = 0;
 let initialDistance = 0, initialScale = 1;
-let lastTouchTime = 0;  // защита от дублирования touch → mouse/click
+let lastTouchTime = 0; 
 
 let originalStampImg = null;
 let stampPixels = [];
@@ -270,7 +277,6 @@ async function initPixelBattle() {
     viewport.addEventListener('mousemove', handleMouseMove);
     viewport.addEventListener('mouseup', handleMouseUp);
     viewport.addEventListener('wheel', handleWheel, { passive: false });
-    // Обработчик click убран: он дублировал touchend и mouseup
 
     isPixelInitialized = true;
     fetchAndDrawPixels();
@@ -541,6 +547,11 @@ function getEventInfo(item, chatId) {
         case 'reaction_earn':
             icon = '🔥';
             title = isAdminView ? `${sender} → ${receiver}` : `Реакция: ${sender}`;
+            subText = item.message_text ? `"${item.message_text}"` : 'Без текста';
+            break;
+        case 'reaction_lose':
+            icon = '🔥';
+            title = isAdminView ? `${sender} → ${receiver}` : `Снятие: ${sender}`;
             subText = item.message_text ? `"${item.message_text}"` : 'Без текста';
             break;
         case 'channel_earn':
