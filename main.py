@@ -73,12 +73,16 @@ async def init_db():
                         chat_id BIGINT NOT NULL,
                         user_id BIGINT NOT NULL,
                         message_id BIGINT NOT NULL,
-                        max_rewarded INTEGER DEFAULT 0,
-                        rewarded_emojis TEXT[] DEFAULT '{}',
-                        toggles INTEGER DEFAULT 0,
+                        current_emojis TEXT[] DEFAULT '{}',
                         UNIQUE (chat_id, user_id, message_id)
                     );
                 ''')
+                # Миграция для новых колонок
+                await conn.execute('ALTER TABLE reactions ADD COLUMN IF NOT EXISTS current_emojis TEXT[] DEFAULT \'{}\'')
+                await conn.execute('ALTER TABLE reactions DROP COLUMN IF EXISTS max_rewarded')
+                await conn.execute('ALTER TABLE reactions DROP COLUMN IF EXISTS rewarded_emojis')
+                await conn.execute('ALTER TABLE reactions DROP COLUMN IF EXISTS toggles')
+
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS channel_rewards (
                         chat_id BIGINT,
@@ -127,12 +131,15 @@ async def init_db():
                         amount INTEGER NOT NULL,
                         type TEXT NOT NULL,
                         message_text TEXT,
+                        message_id BIGINT,
                         created_at TIMESTAMP DEFAULT NOW()
                     );
                 ''')
                 await conn.execute('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS message_text TEXT')
+                await conn.execute('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS message_id BIGINT')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_chat ON transactions(chat_id)')
                 await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_recv ON transactions(receiver_id)')
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_msg ON transactions(chat_id, sender_id, message_id)')
                 
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS referral_links (
@@ -185,12 +192,6 @@ async def init_db():
                         color TEXT NOT NULL,
                         PRIMARY KEY (x, y)
                     );
-                ''')
-
-                # Миграция: чиним старые записи, где max_rewarded хранил баллы (у модераторов x5), а не количество эмодзи
-                await conn.execute('''
-                    UPDATE reactions SET max_rewarded = COALESCE(cardinality(rewarded_emojis), 0)
-                    WHERE COALESCE(max_rewarded, 0) != COALESCE(cardinality(rewarded_emojis), 0)
                 ''')
                 
             print("✅ База данных готова.")
@@ -537,7 +538,7 @@ async def handle_earn_button(callback: CallbackQuery):
                                 INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, -5)
                                 ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - 5
                             ''', channel_id, user.id)
-                            await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, -5, 'fine', $3)", channel_id, user.id, msg_text)
+                            await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $2, -5, 'fine', $3, $4)", channel_id, user.id, msg_text, msg_id)
                             await callback.answer("❌ Штраф -5 баллов за накрутку!", show_alert=True)
                         return
 
@@ -550,7 +551,7 @@ async def handle_earn_button(callback: CallbackQuery):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, 1)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + 1
                     ''', channel_id, user.id)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, 1, 'channel_earn', $3)", channel_id, user.id, msg_text)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $2, 1, 'channel_earn', $3, $4)", channel_id, user.id, msg_text, msg_id)
                     await callback.answer("✅ +1 балл!")
     except Exception as e:
         print(f"❌ [КАНАЛ] Ошибка: {e}")
@@ -563,8 +564,11 @@ async def handle_reaction(reaction: MessageReactionUpdated):
     if not user: return
     old = {r.emoji for r in reaction.old_reaction if r.type == 'emoji'}
     new = {r.emoji for r in reaction.new_reaction if r.type == 'emoji'}
+    
     added = new - old
-    if not added: return
+    removed = old - new
+    
+    if not added and not removed: return
 
     chat_id = reaction.chat.id
     msg_id = reaction.message_id
@@ -589,62 +593,43 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                     ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
                 ''', user.id, user.first_name, user.username)
 
-                row = await conn.fetchrow('''
-                    SELECT id, max_rewarded, rewarded_emojis, toggles FROM reactions
-                    WHERE chat_id = $1 AND user_id = $2 AND message_id = $3
-                ''', chat_id, user.id, msg_id)
-                current_unique = len(new)
+                row = await conn.fetchrow('SELECT id, current_emojis FROM reactions WHERE chat_id = $1 AND user_id = $2 AND message_id = $3', chat_id, user.id, msg_id)
+                
+                # Сохраняем новое состояние реакций
+                await conn.execute('''
+                    INSERT INTO reactions (chat_id, user_id, message_id, current_emojis) 
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (chat_id, user_id, message_id) DO UPDATE SET current_emojis = EXCLUDED.current_emojis
+                ''', chat_id, user.id, msg_id, list(new))
 
-                if row is None:
-                    # Первый заход: сколько уникальных эмодзи стоит — столько и оплачиваем.
-                    # max_rewarded хранит именно КОЛИЧЕСТВО оплаченных эмодзи, а не баллы.
-                    pay_count = current_unique
-                    reward = pay_count * multiplier
-                    await conn.execute('''
-                        INSERT INTO reactions (chat_id, user_id, message_id, max_rewarded, rewarded_emojis, toggles)
-                        VALUES ($1, $2, $3, $4, $5, 0)
-                    ''', chat_id, user.id, msg_id, pay_count, list(new))
+                if added:
+                    added_count = len(added)
+                    reward = added_count * multiplier
                     
+                    # Удаляем старые записи этого юзера на это сообщение (парные +1/-1)
+                    await conn.execute('''
+                        DELETE FROM transactions 
+                        WHERE chat_id = $1 AND sender_id = $2 AND message_id = $3 
+                        AND type IN ('reaction_earn', 'reaction_lose')
+                    ''', chat_id, user.id, msg_id)
+                    
+                    # Записываем новую общую сумму (все текущие реакции)
+                    total_reward = len(new) * multiplier
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
-                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
-                    ''', chat_id, target_user_id, reward)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $3, $4, 'reaction_earn', $5)", chat_id, user.id, target_user_id, reward, msg_text)
-                    return
+                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + $3
+                    ''', chat_id, target_user_id, total_reward)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_earn', $5, $6)", chat_id, user.id, target_user_id, total_reward, msg_text, msg_id)
 
-                max_rewarded = row['max_rewarded'] or 0
-                rewarded_emojis = set(row['rewarded_emojis'] or [])
-                toggles = row['toggles'] or 0
-
-                total_reward = 0
-                new_manipulations = 0
-
-                for emoji in added:
-                    if emoji in rewarded_emojis:
-                        new_manipulations += 1
-                    elif current_unique > max_rewarded:
-                        rewarded_emojis.add(emoji)
-                        max_rewarded += 1
-                        total_reward += 1
-
-                new_toggles = toggles + new_manipulations
-                await conn.execute('UPDATE reactions SET max_rewarded = $1, rewarded_emojis = $2, toggles = $3 WHERE id = $4', max_rewarded, list(rewarded_emojis), new_toggles, row['id'])
-
-                if total_reward > 0:
-                    final_reward = total_reward * multiplier
-                    await conn.execute('''
-                        INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
-                        ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
-                    ''', chat_id, target_user_id, final_reward)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $3, $4, 'reaction_earn', $5)", chat_id, user.id, target_user_id, final_reward, msg_text)
-
-                if new_manipulations > 0 and new_toggles > 1:
-                    fine = 5 * multiplier
+                elif removed:
+                    removed_count = len(removed)
+                    fine = removed_count * multiplier
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - $3
-                    ''', chat_id, user.id, fine)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text) VALUES ($1, $2, $2, $3, 'fine', $4)", chat_id, user.id, -fine, msg_text)
+                    ''', chat_id, target_user_id, fine)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_lose', $5, $6)", chat_id, user.id, target_user_id, -fine, msg_text, msg_id)
+                    
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
 
@@ -703,7 +688,6 @@ async def api_balance(request):
         user_data = validate_init_data(init_data)
         if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
         user_id = user_data.get("id")
-        first_name = user_data.get('first_name', 'User')
         
         async with db_pool.acquire() as conn:
             total = await conn.fetchval('SELECT COALESCE(SUM(balance), 0) FROM balances WHERE user_id = $1', user_id)
@@ -725,50 +709,15 @@ async def api_balance(request):
                 GROUP BY m.chat_id
             ''', user_id)
 
-        # Дедуп по title (как было)
         seen_titles = set()
-        my_chats_filtered = []
-        for r in my_chats_raw:
-            if r['title'] in seen_titles:
-                continue
-            seen_titles.add(r['title'])
-            my_chats_filtered.append(r)
-
-        # Параллельное получение/создание инвайт-ссылок. Сначала смотрим в кэш referral_links,
-        # только если нет — дёргаем Telegram.
-        async def get_or_create_link(cid):
-            async with db_pool.acquire() as c:
-                existing = await c.fetchrow('''
-                    SELECT invite_link FROM referral_links 
-                    WHERE chat_id = $1 AND referrer_id = $2 
-                    AND invite_link NOT LIKE '%start=%'
-                    ORDER BY created_at DESC LIMIT 1
-                ''', cid, user_id)
-                if existing and existing['invite_link']:
-                    return existing['invite_link']
-                try:
-                    inv = await asyncio.wait_for(
-                        bot.create_chat_invite_link(chat_id=cid, name=f"От {first_name}", creates_join_request=False),
-                        timeout=2.5
-                    )
-                    await c.execute('''
-                        INSERT INTO referral_links (invite_link, chat_id, referrer_id)
-                        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-                    ''', inv.invite_link, cid, user_id)
-                    return inv.invite_link
-                except Exception as e:
-                    print(f"⚠️ Не удалось создать ссылку для {cid}: {e}")
-                    return None
-
-        links = await asyncio.gather(*[get_or_create_link(r['chat_id']) for r in my_chats_filtered])
-        
         my_chats = []
-        for r, link in zip(my_chats_filtered, links):
+        for r in my_chats_raw:
+            if r['title'] in seen_titles: continue
+            seen_titles.add(r['title'])
             my_chats.append({
                 "chat_id": r['chat_id'],
                 "title": r['title'],
-                "chat_type": r['chat_type'],
-                "referral_link": link
+                "chat_type": r['chat_type']
             })
             
         return web.json_response({
@@ -780,6 +729,44 @@ async def api_balance(request):
     except Exception as e:
         print(f"❌ КРИТИЧЕСКАЯ ОШИБКА В API_BALANCE: {e}")
         return web.json_response({"error": "Internal Server Error", "details": str(e)}, status=500)
+
+
+async def api_get_invite_link(request):
+    try:
+        init_data = request.query.get("initData")
+        chat_id_str = request.query.get("chat_id")
+        if not init_data or not chat_id_str: return web.json_response({"error": "No data"}, status=400)
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        chat_id = int(chat_id_str)
+        first_name = user_data.get('first_name', 'User')
+        
+        async with db_pool.acquire() as conn:
+            existing = await conn.fetchrow('''
+                SELECT invite_link FROM referral_links 
+                WHERE chat_id = $1 AND referrer_id = $2 
+                AND invite_link NOT LIKE '%start=%'
+                ORDER BY created_at DESC LIMIT 1
+            ''', chat_id, user_id)
+            if existing and existing['invite_link']:
+                return web.json_response({"link": existing['invite_link']})
+            
+            try:
+                inv = await asyncio.wait_for(
+                    bot.create_chat_invite_link(chat_id=chat_id, name=f"От {first_name}", creates_join_request=False),
+                    timeout=3.0
+                )
+                await conn.execute('''
+                    INSERT INTO referral_links (invite_link, chat_id, referrer_id)
+                    VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+                ''', inv.invite_link, chat_id, user_id)
+                return web.json_response({"link": inv.invite_link})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def api_top(request):
@@ -800,20 +787,27 @@ async def api_top(request):
             SELECT b.user_id, b.balance, u.first_name
             FROM balances b JOIN users u ON u.user_id = b.user_id
             WHERE b.chat_id = $1
-            ORDER BY b.balance DESC LIMIT 5
+            ORDER BY b.balance DESC LIMIT 20
         ''', chat_id)
         
         user_bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
         user_bal = user_bal_row['balance'] if user_bal_row else 0
         
-        rank_row = await conn.fetchval('SELECT COUNT(*) + 1 FROM balances WHERE chat_id = $1 AND balance > $2', chat_id, user_bal)
+        rank_row = None
+        for i, r in enumerate(top_rows):
+            if r['user_id'] == user_id:
+                rank_row = i + 1
+                break
         
         to_top5 = 0
-        if len(top_rows) >= 5 and rank_row > 5:
-            fifth_place_bal = top_rows[-1]['balance']
-            to_top5 = (fifth_place_bal - user_bal) + 1
-        elif len(top_rows) < 5 and rank_row > len(top_rows):
-             to_top5 = 1 
+        if len(top_rows) >= 5:
+            fifth_place_bal = top_rows[4]['balance']
+            if user_bal < fifth_place_bal:
+                to_top5 = (fifth_place_bal - user_bal) + 1
+            else:
+                to_top5 = 0 # Уже в топ-5 или равен
+        elif len(top_rows) < 5:
+             to_top5 = 1 if user_bal == 0 else 0
              
         return web.json_response({
             "top": [{"user_id": r["user_id"], "balance": r["balance"], "first_name": r["first_name"] or "Аноним"} for r in top_rows],
@@ -1223,6 +1217,7 @@ async def start_web_server():
     app = web.Application(client_max_size=1024**2 * 20)
     app.router.add_get('/', handle_ping)
     app.router.add_get('/api/balance', api_balance)
+    app.router.add_get('/api/get_invite_link', api_get_invite_link)
     app.router.add_get('/api/top', api_top)
     app.router.add_get('/api/history', api_history)
     
