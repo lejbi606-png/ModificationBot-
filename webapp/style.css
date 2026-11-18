@@ -35,7 +35,7 @@ input[type="number"], textarea, input[type="text"] { font-family: inherit; outli
 input[type="checkbox"] { transform: scale(1.3); accent-color: var(--button-color); }
 .you-plate { position: sticky; bottom: 16px; background: var(--secondary-bg); border: 1px solid var(--button-color); border-radius: 12px; padding: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 -4px 12px rgba(0,0,0,0.2); margin-top: 10px; }
 .you-left { display: flex; align-items: center; gap: 12px; }
-.you-rank { font-weight: 800; font-size: 18px; color: var(--button-color); }
+.you-rank { font-weight: 800; font-size: 15px; color: var(--button-color); }
 .you-name { font-weight: 600; font-size: 16px; }
 .you-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .you-balance { font-weight: 700; font-size: 16px; color: #4cd964; }
@@ -47,7 +47,7 @@ input[type="checkbox"] { transform: scale(1.3); accent-color: var(--button-color
 .list-item .amount.negative { color: #ff4a4a; }
 .list-item .amount.positive { color: #4cd964; }
 
-/* ==== ИСТОРИЯ: карточки как на скрине ==== */
+/* ==== ИСТОРИЯ ==== */
 .tx-item {
     display: flex;
     align-items: center;
