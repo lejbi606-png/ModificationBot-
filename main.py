@@ -77,7 +77,6 @@ async def init_db():
                         UNIQUE (chat_id, user_id, message_id)
                     );
                 ''')
-                # Миграция для новых колонок
                 await conn.execute('ALTER TABLE reactions ADD COLUMN IF NOT EXISTS current_emojis TEXT[] DEFAULT \'{}\'')
                 await conn.execute('ALTER TABLE reactions DROP COLUMN IF EXISTS max_rewarded')
                 await conn.execute('ALTER TABLE reactions DROP COLUMN IF EXISTS rewarded_emojis')
@@ -578,24 +577,46 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         
         async with db_pool.acquire() as conn:
             msg = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
-            if not msg: return
+            if not msg:
+                # Retry once in case save_msg is still processing
+                await asyncio.sleep(0.5)
+                msg = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
+                
+            if not msg:
+                print(f"⚠️ [REACT] msg not found: chat={chat_id} msg={msg_id}. Skipping reaction from user {user.id}.")
+                return
+                
             target_user_id = msg['author_id']
             msg_text = msg['text'] or ""
             
             if target_user_id == user.id: return
             
+            # Ensure BOTH users exist in the users table
+            await conn.execute('''
+                INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
+                ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
+            ''', user.id, user.first_name, user.username)
+            
+            author_exists = await conn.fetchval('SELECT 1 FROM users WHERE user_id = $1', target_user_id)
+            if not author_exists:
+                try:
+                    member = await bot.get_chat_member(chat_id, target_user_id)
+                    if member and member.user:
+                        await conn.execute('''
+                            INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
+                            ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
+                        ''', target_user_id, member.user.first_name, member.user.username)
+                except Exception as e:
+                    print(f"⚠️ [REACT] Could not fetch author info: {e}")
+                    await conn.execute('''
+                        INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING
+                    ''', target_user_id)
+            
             is_mod = await conn.fetchval('SELECT 1 FROM chat_admins WHERE chat_id = $1 AND user_id = $2', chat_id, user.id)
             multiplier = 5 if is_mod else 1
 
             async with conn.transaction():
-                await conn.execute('''
-                    INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
-                    ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
-                ''', user.id, user.first_name, user.username)
-
-                row = await conn.fetchrow('SELECT id, current_emojis FROM reactions WHERE chat_id = $1 AND user_id = $2 AND message_id = $3', chat_id, user.id, msg_id)
-                
-                # Сохраняем новое состояние реакций
+                # Save new reaction state
                 await conn.execute('''
                     INSERT INTO reactions (chat_id, user_id, message_id, current_emojis) 
                     VALUES ($1, $2, $3, $4)
@@ -604,22 +625,27 @@ async def handle_reaction(reaction: MessageReactionUpdated):
 
                 if added:
                     added_count = len(added)
-                    reward = added_count * multiplier
+                    delta = added_count * multiplier        # что прибавить к балансу (только новое)
+                    new_total = len(new) * multiplier        # что записать в транзакцию (итого)
                     
-                    # Удаляем старые записи этого юзера на это сообщение (парные +1/-1)
+                    # Delete old transactions for this (sender, message) pair
                     await conn.execute('''
                         DELETE FROM transactions 
                         WHERE chat_id = $1 AND sender_id = $2 AND message_id = $3 
                         AND type IN ('reaction_earn', 'reaction_lose')
                     ''', chat_id, user.id, msg_id)
                     
-                    # Записываем новую общую сумму (все текущие реакции)
-                    total_reward = len(new) * multiplier
+                    # Add only the delta to balance
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + $3
-                    ''', chat_id, target_user_id, total_reward)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_earn', $5, $6)", chat_id, user.id, target_user_id, total_reward, msg_text, msg_id)
+                    ''', chat_id, target_user_id, delta)
+                    
+                    # Record total in transaction
+                    await conn.execute(
+                        "INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_earn', $5, $6)",
+                        chat_id, user.id, target_user_id, new_total, msg_text, msg_id
+                    )
 
                 elif removed:
                     removed_count = len(removed)
@@ -628,10 +654,15 @@ async def handle_reaction(reaction: MessageReactionUpdated):
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance - $3
                     ''', chat_id, target_user_id, fine)
-                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_lose', $5, $6)", chat_id, user.id, target_user_id, -fine, msg_text, msg_id)
+                    await conn.execute(
+                        "INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_lose', $5, $6)",
+                        chat_id, user.id, target_user_id, -fine, msg_text, msg_id
+                    )
                     
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка реакции: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def check_referrals_loop():
@@ -785,7 +816,7 @@ async def api_top(request):
     async with db_pool.acquire() as conn:
         top_rows = await conn.fetch('''
             SELECT b.user_id, b.balance, u.first_name
-            FROM balances b JOIN users u ON u.user_id = b.user_id
+            FROM balances b LEFT JOIN users u ON u.user_id = b.user_id
             WHERE b.chat_id = $1
             ORDER BY b.balance DESC LIMIT 20
         ''', chat_id)
@@ -804,8 +835,6 @@ async def api_top(request):
             fifth_place_bal = top_rows[4]['balance']
             if user_bal < fifth_place_bal:
                 to_top5 = (fifth_place_bal - user_bal) + 1
-            else:
-                to_top5 = 0 # Уже в топ-5 или равен
         elif len(top_rows) < 5:
              to_top5 = 1 if user_bal == 0 else 0
              
