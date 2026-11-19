@@ -7,7 +7,7 @@ import hmac
 import json
 import random
 from urllib.parse import parse_qsl
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command, CommandObject
@@ -578,7 +578,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
         async with db_pool.acquire() as conn:
             msg = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
             if not msg:
-                # Retry once in case save_msg is still processing
                 await asyncio.sleep(0.5)
                 msg = await conn.fetchrow('SELECT author_id, text FROM messages WHERE chat_id = $1 AND message_id = $2', chat_id, msg_id)
                 
@@ -591,7 +590,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             
             if target_user_id == user.id: return
             
-            # Ensure BOTH users exist in the users table
             await conn.execute('''
                 INSERT INTO users (user_id, first_name, username) VALUES ($1, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE SET first_name = EXCLUDED.first_name, username = EXCLUDED.username
@@ -616,7 +614,6 @@ async def handle_reaction(reaction: MessageReactionUpdated):
             multiplier = 5 if is_mod else 1
 
             async with conn.transaction():
-                # Save new reaction state
                 await conn.execute('''
                     INSERT INTO reactions (chat_id, user_id, message_id, current_emojis) 
                     VALUES ($1, $2, $3, $4)
@@ -625,23 +622,20 @@ async def handle_reaction(reaction: MessageReactionUpdated):
 
                 if added:
                     added_count = len(added)
-                    delta = added_count * multiplier        # что прибавить к балансу (только новое)
-                    new_total = len(new) * multiplier        # что записать в транзакцию (итого)
+                    delta = added_count * multiplier
+                    new_total = len(new) * multiplier
                     
-                    # Delete old transactions for this (sender, message) pair
                     await conn.execute('''
                         DELETE FROM transactions 
                         WHERE chat_id = $1 AND sender_id = $2 AND message_id = $3 
                         AND type IN ('reaction_earn', 'reaction_lose')
                     ''', chat_id, user.id, msg_id)
                     
-                    # Add only the delta to balance
                     await conn.execute('''
                         INSERT INTO balances (chat_id, user_id, balance) VALUES ($1, $2, $3)
                         ON CONFLICT (chat_id, user_id) DO UPDATE SET balance = balances.balance + $3
                     ''', chat_id, target_user_id, delta)
                     
-                    # Record total in transaction
                     await conn.execute(
                         "INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type, message_text, message_id) VALUES ($1, $2, $3, $4, 'reaction_earn', $5, $6)",
                         chat_id, user.id, target_user_id, new_total, msg_text, msg_id
@@ -956,7 +950,7 @@ async def api_predictions_list(request):
                     "id": p['id'],
                     "question": p['question'],
                     "status": p['status'],
-                    "end_time": p['end_time'].isoformat(),
+                    "end_time": p['end_time'].replace(tzinfo=timezone.utc).isoformat(),
                     "pool_yes": p['pool_yes'],
                     "pool_no": p['pool_no'],
                     "user_bet": dict(user_bet) if user_bet else None
@@ -1227,7 +1221,7 @@ async def api_history(request):
     for r in rows:
         item = dict(r)
         if isinstance(item.get('created_at'), datetime):
-            item['created_at'] = item['created_at'].isoformat()
+            item['created_at'] = item['created_at'].replace(tzinfo=timezone.utc).isoformat()
         if not item.get('message_text'):
             item['message_text'] = ""
         history_data.append(item)
