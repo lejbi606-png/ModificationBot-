@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=40">
+    <link rel="stylesheet" href="style.css?v=41">
 </head>
 <body>
     <div class="container">
@@ -48,27 +48,19 @@
                 <div class="history-controls"><select id="shop-chat-select" onchange="loadShop()"><option value="">Выбери чат...</option></select></div>
                 
                 <div class="shop-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h2>🎰 Казино</h2>
-                        <button class="rules-btn" onclick="toggleRules('casino-rules')">Правила ▼</button>
-                    </div>
-                    <div id="casino-rules" class="rules-text" style="display: none;">
-                        <p>Шанс 50/50. Удвой ставку или проиграй.</p>
-                    </div>
-                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <h2>🎰 Казино</h2>
+                    <div style="display: flex; gap: 10px;">
                         <input type="number" id="casino-bet" placeholder="Ставка" style="flex: 1; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
                         <button class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="playCasino()">Крутить</button>
+                    </div>
+                    <button class="rules-btn" onclick="toggleRules('casino-rules')">Правила ▼</button>
+                    <div id="casino-rules" class="rules-text" style="display: none;">
+                        <p>Шанс 50/50. Удвой ставку или проиграй.</p>
                     </div>
                 </div>
 
                 <div class="shop-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h2>🎡 Колесо Фортуны</h2>
-                        <button class="rules-btn" onclick="toggleRules('wheel-rules')">Правила ▼</button>
-                    </div>
-                    <div id="wheel-rules" class="rules-text" style="display: none;">
-                        <p>Ставка от 20 до 100 баллов.<br>Шансы:<br>x0 - 45%<br>x0.5 - 20%<br>x1 - 15%<br>x2 - 12%<br>x3 - 5%<br>x5 - 2.5%<br>x10 - 0.5%</p>
-                    </div>
+                    <h2>🎡 Колесо Фортуны</h2>
                     <div class="wheel-wrapper">
                         <div class="wheel-pointer"></div>
                         <div class="wheel" id="wheel">
@@ -81,35 +73,35 @@
                             <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(359.1deg) translateY(-80px) rotate(-359.1deg);">10x</div>
                         </div>
                     </div>
-                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <div style="display: flex; gap: 10px;">
                         <input type="number" id="wheel-bet" placeholder="Ставка (20-100)" style="flex: 1; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
                         <button id="spin-btn" class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="spinWheel()">Крутить</button>
+                    </div>
+                    <button class="rules-btn" onclick="toggleRules('wheel-rules')">Правила ▼</button>
+                    <div id="wheel-rules" class="rules-text" style="display: none;">
+                        <p>Ставка от 20 до 100 баллов.<br>Шансы:<br>x0 - 45%<br>x0.5 - 20%<br>x1 - 15%<br>x2 - 12%<br>x3 - 5%<br>x5 - 2.5%<br>x10 - 0.5%</p>
                     </div>
                 </div>
 
                 <div class="shop-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h2>🔫 Ограбление (20 б.)</h2>
-                        <button class="rules-btn" onclick="toggleRules('rob-rules')">Правила ▼</button>
-                    </div>
+                    <h2>🔫 Ограбление (20 б.)</h2>
+                    <input type="text" id="rob-search" placeholder="Поиск по нику или имени..." style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px;" oninput="searchVictim()">
+                    <div id="rob-results" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                    <button class="rules-btn" onclick="toggleRules('rob-rules')">Правила ▼</button>
                     <div id="rob-rules" class="rules-text" style="display: none;">
                         <p>Стоимость: 20 баллов.<br>Успех: забираешь 15 баллов.<br>Провал: теряешь 20, жертва получает +10.<br>Кулдаун: 30 мин на грабителя, 1 час на жертву.<br>Если у жертвы 0 баллов — ограбить нельзя.</p>
                     </div>
-                    <input type="text" id="rob-search" placeholder="Поиск по нику или имени..." style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px;" oninput="searchVictim()">
-                    <div id="rob-results" style="display: flex; flex-direction: column; gap: 8px;"></div>
                 </div>
 
                 <div id="post-card" class="shop-card" style="display: none;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h2>📢 Пост в ТГК (20 баллов)</h2>
-                        <button class="rules-btn" onclick="toggleRules('post-rules')">Правила ▼</button>
-                    </div>
+                    <h2>📢 Пост в ТГК (20 баллов)</h2>
+                    <textarea id="post-text" placeholder="Текст сообщения..." rows="3" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px; resize: none;"></textarea>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);"><input type="checkbox" id="post-anon"> Отправить анонимно</label>
+                    <button class="tab-btn" style="width: 100%; background: var(--button-color); color: white; margin-bottom: 10px;" onclick="sendPost()">Опубликовать</button>
+                    <button class="rules-btn" onclick="toggleRules('post-rules')">Правила ▼</button>
                     <div id="post-rules" class="rules-text" style="display: none;">
                         <p>Отправка сообщения в канал. Стоимость 20 баллов. Можно отправить анонимно.</p>
                     </div>
-                    <textarea id="post-text" placeholder="Текст сообщения..." rows="3" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px; resize: none;"></textarea>
-                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);"><input type="checkbox" id="post-anon"> Отправить анонимно</label>
-                    <button class="tab-btn" style="width: 100%; background: var(--button-color); color: white;" onclick="sendPost()">Опубликовать</button>
                 </div>
             </section>
         </div>
@@ -166,6 +158,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=40"></script>
+    <script src="app.js?v=41"></script>
 </body>
 </html>
