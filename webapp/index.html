@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Мой Профиль</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="style.css?v=35">
+    <link rel="stylesheet" href="style.css?v=40">
 </head>
 <body>
     <div class="container">
@@ -13,13 +13,13 @@
             <h1 id="greeting">Привет!</h1>
         </header>
 
-        <div class="nav-tabs" style="overflow-x: auto; white-space: nowrap;">
-            <button class="tab-btn active" onclick="switchTab('balance')">Баланс</button>
-            <button class="tab-btn" onclick="switchTab('top')">Топ-5</button>
-            <button class="tab-btn" onclick="switchTab('shop')">🛒 Магазин</button>
-            <button class="tab-btn" onclick="switchTab('bets')">📈 Ставки</button>
-            <button class="tab-btn" onclick="switchTab('pixel')">👾 Пиксель</button>
-            <button class="tab-btn" onclick="switchTab('history')">История</button>
+        <div class="nav-grid">
+            <button class="nav-btn active" onclick="switchTab('balance')">💰<br>Баланс</button>
+            <button class="nav-btn" onclick="switchTab('top')">🏆<br>Топ-5</button>
+            <button class="nav-btn" onclick="switchTab('shop')">🛒<br>Магазин</button>
+            <button class="nav-btn" onclick="switchTab('bets')">📈<br>Ставки</button>
+            <button class="nav-btn" onclick="switchTab('pixel')">👾<br>Пиксель</button>
+            <button class="nav-btn" onclick="switchTab('history')">📜<br>История</button>
         </div>
 
         <div id="tab-balance" class="tab-content active">
@@ -45,17 +45,68 @@
 
         <div id="tab-shop" class="tab-content">
             <section class="shop-section">
-                <div class="history-controls"><select id="shop-chat-select" onchange="loadShop()"><option value="">Выбери чат для списания...</option></select></div>
+                <div class="history-controls"><select id="shop-chat-select" onchange="loadShop()"><option value="">Выбери чат...</option></select></div>
+                
                 <div class="shop-card">
-                    <h2>🎰 Казино</h2>
-                    <p style="color: var(--hint-color); font-size: 14px; margin-bottom: 10px;">Шанс 50/50. Удвой ставку или проиграй.</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2>🎰 Казино</h2>
+                        <button class="rules-btn" onclick="toggleRules('casino-rules')">Правила ▼</button>
+                    </div>
+                    <div id="casino-rules" class="rules-text" style="display: none;">
+                        <p>Шанс 50/50. Удвой ставку или проиграй.</p>
+                    </div>
                     <div style="display: flex; gap: 10px; margin-bottom: 10px;">
                         <input type="number" id="casino-bet" placeholder="Ставка" style="flex: 1; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
                         <button class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="playCasino()">Крутить</button>
                     </div>
                 </div>
+
                 <div class="shop-card">
-                    <h2>📢 Пост в ТГК (20 баллов)</h2>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2>🎡 Колесо Фортуны</h2>
+                        <button class="rules-btn" onclick="toggleRules('wheel-rules')">Правила ▼</button>
+                    </div>
+                    <div id="wheel-rules" class="rules-text" style="display: none;">
+                        <p>Ставка от 20 до 100 баллов.<br>Шансы:<br>x0 - 45%<br>x0.5 - 20%<br>x1 - 15%<br>x2 - 12%<br>x3 - 5%<br>x5 - 2.5%<br>x10 - 0.5%</p>
+                    </div>
+                    <div class="wheel-wrapper">
+                        <div class="wheel-pointer"></div>
+                        <div class="wheel" id="wheel">
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(81deg) translateY(-80px) rotate(-81deg);">0x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(198deg) translateY(-80px) rotate(-198deg);">0.5x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(261deg) translateY(-80px) rotate(-261deg);">1x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(309.6deg) translateY(-80px) rotate(-309.6deg);">2x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(340.2deg) translateY(-80px) rotate(-340.2deg);">3x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(353.7deg) translateY(-80px) rotate(-353.7deg);">5x</div>
+                            <div class="wheel-label" style="transform: translate(-50%, -50%) rotate(359.1deg) translateY(-80px) rotate(-359.1deg);">10x</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <input type="number" id="wheel-bet" placeholder="Ставка (20-100)" style="flex: 1; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white;">
+                        <button id="spin-btn" class="tab-btn" style="background: var(--button-color); color: white; flex: 1;" onclick="spinWheel()">Крутить</button>
+                    </div>
+                </div>
+
+                <div class="shop-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2>🔫 Ограбление (20 б.)</h2>
+                        <button class="rules-btn" onclick="toggleRules('rob-rules')">Правила ▼</button>
+                    </div>
+                    <div id="rob-rules" class="rules-text" style="display: none;">
+                        <p>Стоимость: 20 баллов.<br>Успех: забираешь 15 баллов.<br>Провал: теряешь 20, жертва получает +10.<br>Кулдаун: 30 мин на грабителя, 1 час на жертву.<br>Если у жертвы 0 баллов — ограбить нельзя.</p>
+                    </div>
+                    <input type="text" id="rob-search" placeholder="Поиск по нику или имени..." style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px;" oninput="searchVictim()">
+                    <div id="rob-results" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                </div>
+
+                <div id="post-card" class="shop-card" style="display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2>📢 Пост в ТГК (20 баллов)</h2>
+                        <button class="rules-btn" onclick="toggleRules('post-rules')">Правила ▼</button>
+                    </div>
+                    <div id="post-rules" class="rules-text" style="display: none;">
+                        <p>Отправка сообщения в канал. Стоимость 20 баллов. Можно отправить анонимно.</p>
+                    </div>
                     <textarea id="post-text" placeholder="Текст сообщения..." rows="3" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: var(--bg-color); color: white; margin-bottom: 10px; resize: none;"></textarea>
                     <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--hint-color);"><input type="checkbox" id="post-anon"> Отправить анонимно</label>
                     <button class="tab-btn" style="width: 100%; background: var(--button-color); color: white;" onclick="sendPost()">Опубликовать</button>
@@ -115,6 +166,6 @@
             </section>
         </div>
     </div>
-    <script src="app.js?v=35"></script>
+    <script src="app.js?v=40"></script>
 </body>
 </html>
