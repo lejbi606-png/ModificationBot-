@@ -882,6 +882,174 @@ async def api_shop_casino(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def api_wheel_spin(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        bet = int(data.get("bet"))
+        
+        if bet < 20 or bet > 100:
+            return web.json_response({"error": "Ставка должна быть от 20 до 100"}, status=400)
+            
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
+                current_bal = bal_row['balance'] if bal_row else 0
+                
+                if current_bal < bet:
+                    return web.json_response({"error": "Недостаточно баллов"}, status=400)
+                
+                await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', bet, chat_id, user_id)
+                await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'wheel_bet')", chat_id, user_id, -bet)
+                
+                r = random.random() * 100
+                if r < 45: mult, sector = 0, 0
+                elif r < 65: mult, sector = 0.5, 1
+                elif r < 80: mult, sector = 1, 2
+                elif r < 92: mult, sector = 2, 3
+                elif r < 97: mult, sector = 3, 4
+                elif r < 99.5: mult, sector = 5, 5
+                else: mult, sector = 10, 6
+                    
+                win_amount = int(bet * mult)
+                
+                if win_amount > 0:
+                    await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', win_amount, chat_id, user_id)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $2, $3, 'wheel_win')", chat_id, user_id, win_amount)
+                    
+                return web.json_response({"result": "ok", "multiplier": mult, "win_amount": win_amount, "sector": sector})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_rob_search(request):
+    try:
+        init_data = request.query.get("initData")
+        chat_id_str = request.query.get("chat_id")
+        query = request.query.get("query", "").lower()
+        
+        if not init_data or not chat_id_str: return web.json_response({"error": "No data"}, status=400)
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        chat_id = int(chat_id_str)
+        
+        if not query:
+            return web.json_response({"users": []})
+            
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT u.user_id, u.first_name, u.username, b.balance
+                FROM balances b
+                JOIN users u ON u.user_id = b.user_id
+                WHERE b.chat_id = $1 AND b.user_id != $2
+                AND (LOWER(u.username) LIKE $3 OR LOWER(u.first_name) LIKE $3)
+                LIMIT 10
+            ''', chat_id, user_id, f"%{query}%")
+            
+            return web.json_response({"users": [dict(r) for r in rows]})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_rob_attempt(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        chat_id = int(data.get("chat_id"))
+        victim_id = int(data.get("victim_id"))
+        
+        user_data = validate_init_data(init_data)
+        if not user_data: return web.json_response({"error": "Invalid initData"}, status=403)
+        user_id = user_data.get("id")
+        
+        if user_id == victim_id:
+            return web.json_response({"error": "Себя грабить нельзя"}, status=400)
+            
+        cost = 20
+        loot = 15
+        comp = 10
+        
+        async with db_pool.acquire() as conn:
+            chat_type = await conn.fetchval("SELECT chat_type FROM managed_chats WHERE chat_id = $1", chat_id)
+            target_chat_id = chat_id
+            if chat_type == "channel":
+                linked_id = await conn.fetchval("SELECT linked_chat_id FROM managed_chats WHERE chat_id = $1", chat_id)
+                if not linked_id:
+                    return web.json_response({"error": "У канала нет привязанного чата"}, status=400)
+                target_chat_id = linked_id
+
+            async with conn.transaction():
+                last_rob = await conn.fetchval('''
+                    SELECT created_at FROM transactions 
+                    WHERE chat_id = $1 AND sender_id = $2 AND type IN ('rob_success', 'rob_fail')
+                    ORDER BY created_at DESC LIMIT 1
+                ''', target_chat_id, user_id)
+                
+                if last_rob and (datetime.now() - last_rob).total_seconds() < 1800:
+                    return web.json_response({"error": "Кулдаун 30 минут"}, status=400)
+                    
+                last_victim = await conn.fetchval('''
+                    SELECT created_at FROM transactions 
+                    WHERE chat_id = $1 AND receiver_id = $2 AND type IN ('rob_success', 'rob_fail')
+                    ORDER BY created_at DESC LIMIT 1
+                ''', target_chat_id, victim_id)
+                
+                if last_victim and (datetime.now() - last_victim).total_seconds() < 3600:
+                    return web.json_response({"error": "Этого юзера недавно уже грабили (кулдаун 1 час)"}, status=400)
+                    
+                robber_bal = await conn.fetchval('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', target_chat_id, user_id) or 0
+                victim_bal = await conn.fetchval('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', target_chat_id, victim_id) or 0
+                
+                if robber_bal < cost:
+                    return web.json_response({"error": "Недостаточно баллов для ограбления (нужно 20)"}, status=400)
+                    
+                if victim_bal <= 0:
+                    return web.json_response({"error": "У жертвы пусто, грабить нечего"}, status=400)
+                    
+                await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', cost, target_chat_id, user_id)
+                
+                success = random.choice([True, False])
+                
+                if success:
+                    actual_loot = min(loot, victim_bal)
+                    await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', actual_loot, target_chat_id, user_id)
+                    await conn.execute('UPDATE balances SET balance = balance - $1 WHERE chat_id = $2 AND user_id = $3', actual_loot, target_chat_id, victim_id)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'rob_success')", target_chat_id, user_id, victim_id, actual_loot)
+                    
+                    phrases = [
+                        f"🚨 {user_data.get('first_name')} подкрался сзади и вытащил {actual_loot} баллов из кармана жертвы! Успешное ограбление!",
+                        f"💸 {user_data.get('first_name')} наставил пушку и забрал {actual_loot} баллов. Полиция уже в пути!",
+                        f"🥷 {user_data.get('first_name')} ограбил на {actual_loot} баллов. Сработало чисто!"
+                    ]
+                    msg = random.choice(phrases)
+                else:
+                    await conn.execute('UPDATE balances SET balance = balance + $1 WHERE chat_id = $2 AND user_id = $3', comp, target_chat_id, victim_id)
+                    await conn.execute("INSERT INTO transactions (chat_id, sender_id, receiver_id, amount, type) VALUES ($1, $2, $3, $4, 'rob_fail')", target_chat_id, user_id, victim_id, -cost)
+                    
+                    phrases = [
+                        f"👮‍♂️ {user_data.get('first_name')} попытался ограбить, но споткнулся и потерял 20 баллов. Жертва получает +10 за бдительность!",
+                        f"🤡 {user_data.get('first_name')} облажался при ограблении. Отдал 20 баллов, а жертва срубила +10 ни за что!",
+                        f"🚑 {user_data.get('first_name')} полез грабить, получил по щам и отлетел на 20 баллов. Жертва получает +10 за смелость!"
+                    ]
+                    msg = random.choice(phrases)
+
+                try:
+                    await bot.send_message(target_chat_id, msg)
+                except Exception as e:
+                    print(f"Failed to send rob message: {e}")
+
+                return web.json_response({"result": "success" if success else "fail", "amount": actual_loot if success else cost})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def api_shop_post(request):
     try:
         data = await request.json()
@@ -898,12 +1066,16 @@ async def api_shop_post(request):
         cost = 20 
         
         async with db_pool.acquire() as conn:
+            chat_type = await conn.fetchval("SELECT chat_type FROM managed_chats WHERE chat_id = $1", chat_id)
+            if chat_type != "channel":
+                return web.json_response({"error": "Постить можно только в каналы"}, status=400)
+
             async with conn.transaction():
                 bal_row = await conn.fetchrow('SELECT balance FROM balances WHERE chat_id = $1 AND user_id = $2', chat_id, user_id)
                 current_bal = bal_row['balance'] if bal_row else 0
                 
                 if current_bal < cost:
-                    return web.json_response({"error": f"Нужно {cost} баллов в этом чате"}, status=400)
+                    return web.json_response({"error": f"Нужно {cost} баллов в этом канале"}, status=400)
                 
                 if is_anonymous:
                     post_text = f"🕵️‍♂️ <b>Анонимное сообщение:</b>\n\n{text}"
@@ -1245,6 +1417,9 @@ async def start_web_server():
     app.router.add_get('/api/history', api_history)
     
     app.router.add_post('/api/shop/casino', api_shop_casino)
+    app.router.add_post('/api/wheel/spin', api_wheel_spin)
+    app.router.add_get('/api/rob/search', api_rob_search)
+    app.router.add_post('/api/rob/attempt', api_rob_attempt)
     app.router.add_post('/api/shop/post', api_shop_post)
     
     app.router.add_get('/api/predictions', api_predictions_list)
