@@ -303,6 +303,14 @@ async function loadBets() {
         div.innerHTML = `<h2 style="font-size: 15px; color: white; text-transform: none; margin-bottom: 8px;">${pred.question}</h2><div style="font-size: 13px; margin-bottom: 8px;">${statusBadge}</div><div style="font-size: 13px; color: var(--hint-color); margin-bottom: 8px;">Банк: ДА [${pred.pool_yes}] / НЕТ [${pred.pool_no}]</div>${userBetHtml}${actionHtml}`;
         betsList.appendChild(div);
     });
+
+    // Новый блок с объяснением для не-админов
+    if (!data.is_admin) {
+        const hint = document.createElement('div');
+        hint.className = 'hint-text';
+        hint.innerText = 'Создавать события могут только администраторы этого чата.';
+        betsList.appendChild(hint);
+    }
 }
 
 async function createBet() {
