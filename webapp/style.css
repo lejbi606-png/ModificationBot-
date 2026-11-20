@@ -19,20 +19,30 @@ header h1 { font-size: 22px; font-weight: 600; }
     margin-bottom: 20px;
 }
 .nav-btn {
-    background: var(--secondary-bg);
+    background-color: var(--secondary-bg);
     border: none;
+    outline: none;
+    box-shadow: none;
+    -webkit-appearance: none;
+    appearance: none;
     border-radius: 12px;
     color: var(--hint-color);
-    padding: 10px 5px;
+    padding: 12px 5px;
     font-weight: 600;
     font-size: 13px;
     cursor: pointer;
     transition: 0.2s;
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-family: inherit;
 }
 .nav-btn.active {
-    background: var(--button-color);
-    color: white;
+    background-color: var(--button-color);
+    color: #ffffff;
 }
 
 .tab-content { display: none; flex-direction: column; gap: 20px; }
@@ -51,10 +61,22 @@ h2 { font-size: 16px; color: var(--hint-color); margin-bottom: 12px; text-transf
 .gold-text { color: #FFD700; font-weight: bold; }
 .silver-text { color: #C0C0C0; font-weight: bold; }
 .bronze-text { color: #CD7F32; font-weight: bold; }
+.hint-text { color: var(--hint-color); font-size: 13px; text-align: center; margin-top: 10px; padding: 10px; line-height: 1.4; }
 
 .shop-card { background-color: var(--secondary-bg); padding: 16px; border-radius: 12px; margin-bottom: 10px; }
-.rules-btn { background: transparent; color: var(--hint-color); border: 1px solid var(--hint-color); border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
-.rules-text { font-size: 13px; color: var(--hint-color); margin-bottom: 12px; line-height: 1.4; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; }
+.rules-btn {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    color: var(--hint-color);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-top: 10px;
+    font-family: inherit;
+}
+.rules-text { font-size: 13px; color: var(--hint-color); margin-top: 10px; line-height: 1.4; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; }
 
 input[type="number"], textarea, input[type="text"] { font-family: inherit; outline: none; }
 input[type="checkbox"] { transform: scale(1.3); accent-color: var(--button-color); }
