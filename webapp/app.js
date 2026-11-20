@@ -30,10 +30,19 @@ async function postAPI(endpoint, body) {
     } catch (error) { return { ok: false, data: { error: "Ошибка сети: " + error.message } }; }
 }
 
+function toggleRules(id) {
+    const el = document.getElementById(id);
+    if (el.style.display === 'none') {
+        el.style.display = 'block';
+    } else {
+        el.style.display = 'none';
+    }
+}
+
 function switchTab(tabName) {
-    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
+    document.querySelector(`.nav-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
     document.getElementById(`tab-${tabName}`).classList.add('active');
     if (tabName === 'history') loadHistory();
     if (tabName === 'top') loadTop();
@@ -79,7 +88,7 @@ async function loadBalance() {
     
     topSelect.innerHTML = '<option value="">Выбери чат...</option>';
     historySelect.innerHTML = '<option value="">Моя общая история</option>';
-    shopSelect.innerHTML = '<option value="">Выбери чат для списания...</option>';
+    shopSelect.innerHTML = '<option value="">Выбери чат...</option>';
     betsSelect.innerHTML = '<option value="">Выбери чат...</option>';
     
     allMyChats.forEach(chat => {
@@ -127,7 +136,22 @@ async function loadTop() {
     document.getElementById('you-hint').innerText = data.user_place.to_top5 > 0 ? `До Топ-5: ${data.user_place.to_top5} б.` : `Ты в Топ-5!`;
 }
 
-async function loadShop() {}
+function loadShop() {
+    const chatId = document.getElementById('shop-chat-select').value;
+    const postCard = document.getElementById('post-card');
+    
+    if (!chatId) {
+        postCard.style.display = 'none';
+        return;
+    }
+    
+    const chat = allMyChats.find(c => c.chat_id == chatId);
+    if (chat && chat.chat_type === 'channel') {
+        postCard.style.display = 'block';
+    } else {
+        postCard.style.display = 'none';
+    }
+}
 
 async function playCasino() {
     const chatId = document.getElementById('shop-chat-select').value; const betStr = document.getElementById('casino-bet').value;
@@ -138,6 +162,102 @@ async function playCasino() {
     if (!res.ok) return tg.showAlert(res.data.error || "Ошибка");
     if (res.data.result === 'win') tg.showAlert(`🎉 Ты выиграл ${res.data.amount} баллов!`); else tg.showAlert(`💸 Ты проиграл ${res.data.amount} баллов.`);
     loadBalance(); 
+}
+
+// ================== КОЛЕСО ФОРТУНЫ ==================
+let currentRotation = 0;
+
+async function spinWheel() {
+    const chatId = document.getElementById('shop-chat-select').value;
+    const betStr = document.getElementById('wheel-bet').value;
+    if (!chatId) return tg.showAlert("Выбери чат!");
+    const bet = parseInt(betStr);
+    if (!bet || bet < 20 || bet > 100) return tg.showAlert("Ставка от 20 до 100!");
+
+    const btn = document.getElementById('spin-btn');
+    btn.innerText = "..."; btn.disabled = true;
+
+    const res = await postAPI('wheel/spin', { chat_id: chatId, bet: bet });
+    
+    if (!res.ok) {
+        btn.innerText = "Крутить"; btn.disabled = false;
+        return tg.showAlert(res.data.error || "Ошибка");
+    }
+
+    const sector = res.data.sector;
+    const centers = [81, 198, 261, 309.6, 340.2, 353.7, 359.1];
+    const targetAngle = 360 - centers[sector];
+    const fullRotations = 5 + Math.floor(Math.random() * 3); 
+    
+    currentRotation += 360 * fullRotations;
+    const currentMod = currentRotation % 360;
+    const diff = (targetAngle - currentMod + 360) % 360;
+    currentRotation += diff;
+    
+    const wheel = document.getElementById('wheel');
+    wheel.style.transition = 'transform 4s cubic-bezier(0.1, 0.7, 0.1, 1)';
+    wheel.style.transform = `rotate(${currentRotation}deg)`;
+    
+    setTimeout(() => {
+        btn.innerText = "Крутить"; btn.disabled = false;
+        if (res.data.multiplier === 0) {
+            tg.showAlert(`💸 Вы проиграли ${bet} баллов.`);
+        } else {
+            tg.showAlert(`🎉 Выпало x${res.data.multiplier}! Вы выиграли ${res.data.win_amount} баллов!`);
+        }
+        loadBalance();
+    }, 4100);
+}
+
+// ================== ОГРАБЛЕНИЕ ==================
+let robTimeout = null;
+async function searchVictim() {
+    clearTimeout(robTimeout);
+    const query = document.getElementById('rob-search').value.trim();
+    const chatId = document.getElementById('shop-chat-select').value;
+    const results = document.getElementById('rob-results');
+    
+    if (!chatId) { results.innerHTML = '<div style="color: #ff4a4a; font-size: 12px;">Сначала выбери чат сверху</div>'; return; }
+    if (!query) { results.innerHTML = ''; return; }
+    
+    results.innerHTML = '<div class="loading">Поиск...</div>';
+    
+    robTimeout = setTimeout(async () => {
+        const data = await fetchAPI('rob/search', `&chat_id=${chatId}&query=${encodeURIComponent(query)}`);
+        if (!data || !data.users) { results.innerHTML = ''; return; }
+        if (data.users.length === 0) { results.innerHTML = '<div class="loading">Никого не найдено</div>'; return; }
+        
+        results.innerHTML = '';
+        data.users.forEach(u => {
+            const div = document.createElement('div');
+            div.className = 'list-item';
+            div.innerHTML = `<div><div class="title">${u.first_name} ${u.username ? '@'+u.username : ''}</div><div style="font-size: 12px; color: var(--hint-color);">Баланс: ${u.balance}</div></div><button class="tab-btn" style="width: auto; padding: 5px 15px; background: #ff4a4a; color: white;" onclick="confirmRob(${u.user_id}, '${u.first_name}')">Грабить</button>`;
+            results.appendChild(div);
+        });
+    }, 500);
+}
+
+function confirmRob(victimId, victimName) {
+    const chatId = document.getElementById('shop-chat-select').value;
+    tg.showPopup({
+        title: 'Ограбление',
+        message: `Точно хочешь ограбить ${victimName} за 20 баллов?`,
+        buttons: [{id: 'yes', type: 'default', text: 'Да'}, {id: 'no', type: 'cancel'}]
+    }, async (buttonId) => {
+        if (buttonId !== 'yes') return;
+        const res = await postAPI('rob/attempt', { chat_id: chatId, victim_id: victimId });
+        if (!res.ok) return tg.showAlert(res.data.error || "Ошибка");
+        
+        if (res.data.result === 'success') {
+            tg.showAlert(`🚨 Успех! Ты забрал ${res.data.amount} баллов.`);
+        } else {
+            tg.showAlert(`👮‍♂️ Провал! Ты потерял 20 баллов, а жертва получила +10.`);
+        }
+        
+        document.getElementById('rob-search').value = '';
+        document.getElementById('rob-results').innerHTML = '';
+        loadBalance();
+    });
 }
 
 async function sendPost() {
@@ -578,6 +698,26 @@ function getEventInfo(item, chatId) {
             icon = '🎲';
             title = `Ставка: ${sender}`;
             subText = 'Казино';
+            break;
+        case 'wheel_win':
+            icon = '🎡';
+            title = `Выигрыш: ${receiver}`;
+            subText = 'Колесо Фортуны';
+            break;
+        case 'wheel_bet':
+            icon = '🎡';
+            title = `Ставка: ${sender}`;
+            subText = 'Колесо Фортуны';
+            break;
+        case 'rob_success':
+            icon = '🔫';
+            title = `Ограбление: ${sender} → ${receiver}`;
+            subText = 'Успех';
+            break;
+        case 'rob_fail':
+            icon = '🚔';
+            title = `Ограбление: ${sender} → ${receiver}`;
+            subText = 'Провал';
             break;
         case 'shop_post':
             icon = '✉️';
